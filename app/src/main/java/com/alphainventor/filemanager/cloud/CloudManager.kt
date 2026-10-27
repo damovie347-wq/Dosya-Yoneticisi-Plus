@@ -252,7 +252,7 @@ object CloudManager {
         if (account.accessToken.startsWith("DEMO_")) {
             return generateDemoDriveFiles(account, folderId)
         }
-        val escapedParent = folderId.replace("'", "\'")
+        val escapedParent = folderId.replace("'", "\\'")
         val q = "'$escapedParent' in parents and trashed = false"
         return executeGoogleDriveQuery(account, q)
     }
@@ -263,7 +263,7 @@ object CloudManager {
                 query.isEmpty() || it.name.contains(query, ignoreCase = true)
             }
         }
-        val escaped = query.replace("'", "\'")
+        val escaped = query.replace("'", "\\'")
         val q = if (escaped.isEmpty()) {
             "trashed = false"
         } else {

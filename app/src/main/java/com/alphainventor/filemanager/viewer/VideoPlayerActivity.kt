@@ -307,17 +307,15 @@ class VideoPlayerActivity : AppCompatActivity() {
     private fun showTrackInfoDialog() {
         val p = exoPlayer ?: return
         val formatInfo = buildString {
-            append("Video Başlığı: $videoTitle
-")
-            append("Aktif Çözücü Modu: ${binding.tvCodecBadge.text}
-")
+            append("Video Başlığı: $videoTitle\n")
+            append("Aktif Çözücü Modu: ${binding.tvCodecBadge.text}\n")
             p.videoFormat?.let { vf ->
-                append("Video Kodek: ${vf.sampleMimeType ?: "Bilinmiyor"} (${vf.width}x${vf.height})
-")
+                val vMime = vf.sampleMimeType ?: "Bilinmiyor"
+                append("Video Kodek: $vMime (${vf.width}x${vf.height})\n")
             }
             p.audioFormat?.let { af ->
-                append("Ses Kodek: ${af.sampleMimeType ?: "Bilinmiyor"} (${af.channelCount} kanal, ${af.sampleRate} Hz)
-")
+                val aMime = af.sampleMimeType ?: "Bilinmiyor"
+                append("Ses Kodek: $aMime (${af.channelCount} kanal, ${af.sampleRate} Hz)\n")
             }
         }
         AlertDialog.Builder(this)

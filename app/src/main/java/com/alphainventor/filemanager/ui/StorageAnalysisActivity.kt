@@ -47,10 +47,8 @@ class StorageAnalysisActivity : AppCompatActivity() {
             binding.pbAnalysisMain.progress = report.overview.usedPercent
 
             binding.tvCategoryBreakdownDetails.text =
-                "• Görüntüler: ${FormatUtils.formatSize(report.imagesBytes)}      • Ses: ${FormatUtils.formatSize(report.audioBytes)}
-" +
-                "• Videolar: ${FormatUtils.formatSize(report.videosBytes)}        • Belgeler: ${FormatUtils.formatSize(report.docsBytes)}
-" +
+                "• Görüntüler: ${FormatUtils.formatSize(report.imagesBytes)}      • Ses: ${FormatUtils.formatSize(report.audioBytes)}\n" +
+                "• Videolar: ${FormatUtils.formatSize(report.videosBytes)}        • Belgeler: ${FormatUtils.formatSize(report.docsBytes)}\n" +
                 "• Arşivler: ${FormatUtils.formatSize(report.archivesBytes)}        • Diğerleri: ${FormatUtils.formatSize(report.othersBytes)}"
 
             // Yinelenen dosyalar

@@ -259,8 +259,7 @@ class CloudAccountsActivity : AppCompatActivity() {
             "ℹ Dosya ve Hesap Özellikleri"
         )
         AlertDialog.Builder(this)
-            .setTitle("${item.name}
-[☁ ${item.providerName}: ${item.accountEmailOrLabel}]")
+            .setTitle("${item.name}\n[☁ ${item.providerName}: ${item.accountEmailOrLabel}]")
             .setItems(options) { _, which ->
                 when (which) {
                     0 -> openCloudItemInternally(item, account)
@@ -278,14 +277,10 @@ class CloudAccountsActivity : AppCompatActivity() {
                         AlertDialog.Builder(this)
                             .setTitle("Bulut Dosyası Bilgisi")
                             .setMessage(
-                                "Dosya Adı: ${item.name}
-" +
-                                    "Bulut Sağlayıcı: ${item.providerName}
-" +
-                                    "Bulunduğu Hesap: ${item.accountEmailOrLabel}
-" +
-                                    "Boyut: ${com.alphainventor.filemanager.util.FormatUtils.formatSizeDetailed(item.size)}
-" +
+                                "Dosya Adı: ${item.name}\n" +
+                                    "Bulut Sağlayıcı: ${item.providerName}\n" +
+                                    "Bulunduğu Hesap: ${item.accountEmailOrLabel}\n" +
+                                    "Boyut: ${com.alphainventor.filemanager.util.FormatUtils.formatSizeDetailed(item.size)}\n" +
                                     "Dosya Kimliği: ${item.id}"
                             )
                             .setPositiveButton("Tamam", null)
@@ -446,11 +441,8 @@ class CloudAccountsActivity : AppCompatActivity() {
 
     private fun showBatchAddGoogleDriveAccountsDialog() {
         val etMulti = EditText(this).apply {
-            hint = "Her satıra bir Google Drive e-postası (veya eposta|token) yazın:
-" +
-                "damovie351@gmail.com
-damovie352@gmail.com
-daamfgf@gmail.com"
+            hint = "Her satıra bir Google Drive e-postası (veya eposta|token) yazın:\n" +
+                "damovie351@gmail.com\ndamovie352@gmail.com\ndaamfgf@gmail.com"
             minLines = 6
         }
         AlertDialog.Builder(this)

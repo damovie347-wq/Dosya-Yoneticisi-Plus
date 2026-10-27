@@ -71,8 +71,7 @@ class FtpServerService : Service() {
                 val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
                 val writer = BufferedWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8))
                 fun reply(line: String) {
-                    writer.write("$line
-")
+                    writer.write("$line\r\n")
                     writer.flush()
                 }
 
@@ -97,12 +96,7 @@ class FtpServerService : Service() {
                         }
                         "SYST" -> reply("215 UNIX Type: L8")
                         "FEAT" -> {
-                            writer.write("211-Features:
- UTF8
- SIZE
- PASV
-211 End
-")
+                            writer.write("211-Features:\r\n UTF8\r\n SIZE\r\n PASV\r\n211 End\r\n")
                             writer.flush()
                         }
                         "OPTS" -> reply("200 UTF8 aktif")
@@ -110,7 +104,7 @@ class FtpServerService : Service() {
                             val rel = currentDir.absolutePath.removePrefix(
                                 Environment.getExternalStorageDirectory().absolutePath
                             ).ifEmpty { "/" }
-                            reply("257 "$rel" current directory")
+                            reply("257 \"$rel\" current directory")
                         }
                         "TYPE" -> reply("200 Type set to $arg")
                         "CWD" -> {
@@ -151,8 +145,7 @@ class FtpServerService : Service() {
                                     if (!showHidden && f.name.startsWith(".")) continue
                                     val perms = if (f.isDirectory) "drwxr-xr-x" else "-rw-r--r--"
                                     val dateStr = fmt.format(Date(f.lastModified()))
-                                    out.write("$perms 1 owner group ${f.length()} $dateStr ${f.name}
-")
+                                    out.write("$perms 1 owner group ${f.length()} $dateStr ${f.name}\r\n")
                                 }
                                 out.flush()
                             }

@@ -58,6 +58,7 @@ android {
     }
 
     compileOptions {
+        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
@@ -89,6 +90,9 @@ android {
 }
 
 dependencies {
+    // Core Library Desugaring (Android 5.0+ ve Media3 FFmpeg Decoder uyumluluğu için zorunlu)
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
+
     // Çekirdek AndroidX (Android 5.0 API 21 - Android 15 API 35 tam uyumlu)
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
