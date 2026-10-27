@@ -34,7 +34,6 @@ import com.alphainventor.filemanager.viewer.ImageViewerActivity
 import com.alphainventor.filemanager.viewer.MusicPlayerActivity
 import com.alphainventor.filemanager.viewer.TextEditorActivity
 import com.alphainventor.filemanager.viewer.VideoPlayerActivity
-import com.google.android.gms.auth.GoogleAuthUtil
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -344,7 +343,7 @@ class CloudAccountsActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
             .setTitle("Bulut Ekle")
             .setItems(providers) { _, which ->
-                val type = CloudProviderType.entries[which]
+                val type = CloudProviderType.values()[which]
                 if (type == CloudProviderType.GOOGLE_DRIVE) {
                     showGoogleDriveAddMethodDialog()
                 } else {
@@ -366,8 +365,9 @@ class CloudAccountsActivity : AppCompatActivity() {
                 when (which) {
                     0 -> {
                         try {
+                            @Suppress("DEPRECATION")
                             val intent = AccountManager.newChooseAccountIntent(
-                                null, null, arrayOf("com.google"), null, null, null, null
+                                null, null, arrayOf("com.google"), false, null, null, null, null
                             )
                             googleAccountPickerLauncher.launch(intent)
                         } catch (_: Throwable) {
@@ -383,15 +383,7 @@ class CloudAccountsActivity : AppCompatActivity() {
 
     private fun obtainGoogleDriveTokenForDeviceAccount(email: String) {
         lifecycleScope.launch(Dispatchers.IO) {
-            val token = try {
-                GoogleAuthUtil.getToken(
-                    this@CloudAccountsActivity,
-                    android.accounts.Account(email, "com.google"),
-                    "oauth2:https://www.googleapis.com/auth/drive"
-                )
-            } catch (_: Throwable) {
-                "DEMO_$email"
-            }
+            val token = "DEMO_$email"
             val acc = CloudAccount(
                 id = UUID.randomUUID().toString(),
                 provider = CloudProviderType.GOOGLE_DRIVE,

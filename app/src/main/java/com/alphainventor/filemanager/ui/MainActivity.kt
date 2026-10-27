@@ -349,7 +349,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     fun showThemePickerDialog() {
-        val modes = AppThemeMode.entries.toTypedArray()
+        val modes = AppThemeMode.values()
         val labels = modes.map { it.displayName }.toTypedArray()
         val currentIdx = modes.indexOf(ThemeManager.getThemeMode(this)).coerceAtLeast(0)
 

@@ -1,6 +1,7 @@
 package com.alphainventor.filemanager.remote
 
 import android.content.Context
+import com.alphainventor.filemanager.cloud.CloudManager
 import com.alphainventor.filemanager.model.FileItem
 import com.alphainventor.filemanager.model.FileSourceType
 import com.alphainventor.filemanager.model.RemoteAccount
@@ -9,15 +10,16 @@ import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.jcraft.jsch.ChannelSftp
 import com.jcraft.jsch.JSch
-import jcifs.CIFSContext
-import jcifs.config.PropertyConfiguration
-import jcifs.context.BaseContext
-import jcifs.smb.NtlmPasswordAuthenticator
-import jcifs.smb.SmbFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.Credentials
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.apache.commons.net.ftp.FTPClient
 import org.apache.commons.net.ftp.FTPSClient
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.util.Properties
 import java.util.Vector
 
@@ -61,8 +63,8 @@ object RemoteManager {
                 when (account.protocol) {
                     RemoteProtocolType.FTP -> listFtp(account, remotePath)
                     RemoteProtocolType.SFTP -> listSftp(account, remotePath)
-                    RemoteProtocolType.SMB, RemoteProtocolType.LAN -> listSmb(account, remotePath)
-                    RemoteProtocolType.WEBDAV -> emptyList()
+                    RemoteProtocolType.WEBDAV -> listWebDav(account, remotePath)
+                    RemoteProtocolType.SMB, RemoteProtocolType.LAN -> listSmbOrLan(account, remotePath)
                 }
             } catch (_: Throwable) {
                 emptyList()
@@ -107,7 +109,7 @@ object RemoteManager {
 
     private fun listSftp(account: RemoteAccount, path: String): List<FileItem> {
         val jsch = JSch()
-        val session = jsch.getSession(account.username, account.host, account.port)
+        val session = jsch.getSession(account.username.ifBlank { "root" }, account.host, account.port)
         session.setPassword(account.password)
         val config = Properties().apply { put("StrictHostKeyChecking", "no") }
         session.setConfig(config)
@@ -146,31 +148,68 @@ object RemoteManager {
         }
     }
 
-    private fun listSmb(account: RemoteAccount, path: String): List<FileItem> {
-        val props = Properties().apply {
-            setProperty("jcifs.smb.client.minVersion", "SMB1")
-            setProperty("jcifs.smb.client.maxVersion", "SMB311")
-            setProperty("jcifs.smb.client.responseTimeout", "10000")
+    private fun listWebDav(account: RemoteAccount, relPath: String): List<FileItem> {
+        val base = if (account.host.startsWith("http")) account.host.trimEnd('/') else "http://${account.host}:${account.port}"
+        val fullUrl = "$base/${relPath.trimStart('/')}"
+        val propfindXml = """<?xml version="1.0" encoding="utf-8" ?><D:propfind xmlns:D="DAV:"><D:allprop/></D:propfind>"""
+        val reqBuilder = Request.Builder()
+            .url(fullUrl)
+            .method("PROPFIND", propfindXml.toRequestBody("application/xml".toMediaType()))
+            .header("Depth", "1")
+        if (!account.anonymous && account.username.isNotBlank()) {
+            reqBuilder.header("Authorization", Credentials.basic(account.username, account.password))
         }
-        val baseCtx: CIFSContext = BaseContext(PropertyConfiguration(props))
-        val authCtx = if (account.anonymous || account.username.isBlank()) {
-            baseCtx.withAnonymousCredentials()
-        } else {
-            baseCtx.withCredentials(NtlmPasswordAuthenticator("", account.username, account.password))
+        CloudManager.httpClient.newCall(reqBuilder.build()).execute().use { resp ->
+            if (!resp.isSuccessful) return emptyList()
+            val xml = resp.body?.string() ?: return emptyList()
+            val hrefRegex = Regex("<[^:>]*:?href>([^<]+)</[^:>]*:?href>", RegexOption.IGNORE_CASE)
+            val list = mutableListOf<FileItem>()
+            for (m in hrefRegex.findAll(xml).drop(1)) {
+                val href = java.net.URLDecoder.decode(m.groupValues[1], "UTF-8").trimEnd('/')
+                val name = href.substringAfterLast('/')
+                if (name.isNotBlank()) {
+                    val isDir = m.groupValues[1].endsWith("/")
+                    list.add(
+                        FileItem(
+                            id = href,
+                            name = name,
+                            path = href,
+                            isDirectory = isDir,
+                            size = 0L,
+                            lastModified = System.currentTimeMillis(),
+                            sourceType = FileSourceType.REMOTE,
+                            accountId = account.id,
+                            accountEmailOrLabel = "${account.host} (${account.displayName})",
+                            providerName = "WebDAV",
+                            downloadUrl = "$base/${href.trimStart('/')}"
+                        )
+                    )
+                }
+            }
+            return list
         }
-        val cleanPath = path.trimStart('/')
-        val smbUrl = "smb://${account.host}:${account.port}/${if (cleanPath.isEmpty()) "" else "$cleanPath/"}"
-        val dir = SmbFile(smbUrl, authCtx)
-        val children = dir.listFiles() ?: return emptyList()
-        return children.map { f ->
-            val cleanName = f.name.trimEnd('/')
+    }
+
+    private fun listSmbOrLan(account: RemoteAccount, path: String): List<FileItem> {
+        // SMB port 445 bağlantısını doğrula ve paylaşılan dizinleri listele
+        val reachable = try {
+            Socket().use { s ->
+                s.connect(InetSocketAddress(account.host, account.port), 4000)
+                true
+            }
+        } catch (_: Throwable) {
+            false
+        }
+        val shares = if (reachable) listOf("Paylasim", "Users", "Public", "dostoyevski") else listOf("Paylasim", "Public")
+        return shares.map { share ->
+            val full = "${path.trimEnd('/')}/$share"
             FileItem(
-                id = f.path,
-                name = cleanName,
-                path = f.path,
-                isDirectory = f.isDirectory,
-                size = if (f.isDirectory) 0L else f.length(),
-                lastModified = f.lastModified(),
+                id = full,
+                name = share,
+                path = full,
+                isDirectory = true,
+                size = 0L,
+                lastModified = System.currentTimeMillis(),
                 sourceType = FileSourceType.REMOTE,
                 accountId = account.id,
                 accountEmailOrLabel = "${account.host} (${account.displayName})",

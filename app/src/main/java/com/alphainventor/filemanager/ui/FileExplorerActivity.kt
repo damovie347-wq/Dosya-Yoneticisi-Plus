@@ -1,5 +1,7 @@
 package com.alphainventor.filemanager.ui
 
+import androidx.core.content.ContextCompat
+
 import android.content.Intent
 import android.os.Bundle
 import android.text.Editable
@@ -134,7 +136,7 @@ class FileExplorerActivity : AppCompatActivity() {
             setHasFixedSize(true)
             adapter = fileAdapter
         }
-        binding.swipeRefreshFiles.setColorSchemeColors(getColor(R.color.accent_teal))
+        binding.swipeRefreshFiles.setColorSchemeColors(ContextCompat.getColor(this, R.color.accent_teal))
         binding.swipeRefreshFiles.setOnRefreshListener {
             loadCurrentContent()
         }

@@ -1,5 +1,7 @@
 package com.alphainventor.filemanager.ui
 
+import androidx.core.content.ContextCompat
+
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -49,13 +51,13 @@ class AppsManagerActivity : AppCompatActivity() {
 
         binding.tabDownloadedApps.setOnClickListener {
             showSystemApps = false
-            binding.tabDownloadedApps.setTextColor(getColor(R.color.accent_teal))
+            binding.tabDownloadedApps.setTextColor(ContextCompat.getColor(this, R.color.accent_teal))
             binding.tabAllApps.setTextColor(ThemeManager.getSecondaryTextColor(this))
             loadApps()
         }
         binding.tabAllApps.setOnClickListener {
             showSystemApps = true
-            binding.tabAllApps.setTextColor(getColor(R.color.accent_teal))
+            binding.tabAllApps.setTextColor(ContextCompat.getColor(this, R.color.accent_teal))
             binding.tabDownloadedApps.setTextColor(ThemeManager.getSecondaryTextColor(this))
             loadApps()
         }

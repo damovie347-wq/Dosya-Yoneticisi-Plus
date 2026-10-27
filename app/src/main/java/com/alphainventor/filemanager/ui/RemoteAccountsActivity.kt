@@ -80,7 +80,7 @@ class RemoteAccountsActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
             .setTitle("Uzak Konum Ekle")
             .setItems(protocols) { _, which ->
-                val proto = RemoteProtocolType.entries[which]
+                val proto = RemoteProtocolType.values()[which]
                 showServerConfigDialog(proto)
             }
             .show()

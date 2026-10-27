@@ -28,8 +28,6 @@ import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.extractor.DefaultExtractorsFactory
-import androidx.media3.extractor.mp4.Mp4Extractor
-import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory
 import com.alphainventor.filemanager.cloud.CloudManager
 import com.alphainventor.filemanager.core.LocalFileRepository
 import com.alphainventor.filemanager.databinding.ActivityVideoPlayerBinding
@@ -102,8 +100,6 @@ class VideoPlayerActivity : AppCompatActivity() {
         // 2. Tüm video uzantıları ve bozuk indeksli MKV/TS/MP4 akışları için gelişmiş ExtractorsFactory:
         val extractorsFactory = DefaultExtractorsFactory()
             .setConstantBitrateSeekingEnabled(true)
-            .setTsExtractorFlags(DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES)
-            .setMp4ExtractorFlags(Mp4Extractor.FLAG_WORKAROUND_IGNORE_EDIT_LISTS)
 
         // 3. Google Drive / Dropbox / OneDrive / WebDAV akışları için Bearer Token destekli HTTP DataSource:
         val okHttpFactory = OkHttpDataSource.Factory(CloudManager.httpClient).apply {

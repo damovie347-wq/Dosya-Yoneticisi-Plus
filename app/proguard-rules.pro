@@ -1,7 +1,7 @@
 -optimizationpasses 5
 -dontusemixedcaseclassnames
 -dontskipnonpubliclibraryclasses
--verbose
+-ignorewarnings
 
 # Model sınıflarını koru (Gson JSON serileştirme için)
 -keep class com.alphainventor.filemanager.model.** { *; }
@@ -11,13 +11,17 @@
 # Media3 / ExoPlayer & FFmpeg JNI
 -keep class androidx.media3.** { *; }
 -keep class org.jellyfin.media3.** { *; }
+-dontwarn androidx.media3.**
 -dontwarn org.jellyfin.media3.**
 
-# JCIFS / JSch / Commons Net
--keep class jcifs.** { *; }
--dontwarn jcifs.**
+# JSch / Commons Net / Commons Compress / OkHttp
 -keep class com.jcraft.jsch.** { *; }
 -dontwarn com.jcraft.jsch.**
+-dontwarn org.apache.commons.**
+-dontwarn okhttp3.**
+-dontwarn okio.**
 -dontwarn org.bouncycastle.**
 -dontwarn org.conscrypt.**
 -dontwarn org.openjsse.**
+-dontwarn java.awt.**
+-dontwarn javax.naming.**

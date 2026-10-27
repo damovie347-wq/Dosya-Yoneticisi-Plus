@@ -4,11 +4,9 @@ import android.app.Activity
 import android.content.Context
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.view.View
-import android.view.ViewGroup
-import android.widget.TextView
 import androidx.appcompat.app.AppCompatDelegate
-import com.alphainventor.filemanager.R
 
 enum class AppThemeMode(val id: Int, val displayName: String) {
     LIGHT(0, "Açık Tema (Klasik Beyaz)"),
@@ -16,7 +14,7 @@ enum class AppThemeMode(val id: Int, val displayName: String) {
     AMOLED(2, "AMOLED Tam Siyah (#000000 - Maksimum Pil & Sıfır Isınma)");
 
     companion object {
-        fun fromId(id: Int): AppThemeMode = entries.firstOrNull { it.id == id } ?: LIGHT
+        fun fromId(id: Int): AppThemeMode = values().firstOrNull { it.id == id } ?: LIGHT
     }
 }
 
@@ -103,8 +101,10 @@ object ThemeManager {
     fun applyWindowColors(activity: Activity, rootView: View? = null, toolbarView: View? = null) {
         val toolbarColor = getToolbarColor(activity)
         val bgColor = getBackgroundColor(activity)
-        activity.window.statusBarColor = toolbarColor
-        activity.window.navigationBarColor = if (getThemeMode(activity) == AppThemeMode.AMOLED) Color.BLACK else toolbarColor
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            activity.window.statusBarColor = toolbarColor
+            activity.window.navigationBarColor = if (getThemeMode(activity) == AppThemeMode.AMOLED) Color.BLACK else toolbarColor
+        }
         rootView?.setBackgroundColor(bgColor)
         toolbarView?.setBackgroundColor(toolbarColor)
     }
