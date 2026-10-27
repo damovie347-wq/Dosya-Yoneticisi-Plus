@@ -186,6 +186,28 @@ class VideoPlayerActivity : AppCompatActivity() {
             binding.btnPlaybackSpeed.text = "${currentSpeed}x"
         }
 
+        binding.btnSubtitlesAndAudio.setOnClickListener {
+            showTrackInfoDialog()
+        }
+
+        binding.btnAspectRatio.setOnClickListener {
+            val nextMode = when (binding.exoPlayerView.resizeMode) {
+                androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT -> {
+                    seekByDelta(0L, "Crop to Fit")
+                    androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                }
+                androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> {
+                    seekByDelta(0L, "Stretch")
+                    androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FILL
+                }
+                else -> {
+                    seekByDelta(0L, "Fit Screen")
+                    androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+                }
+            }
+            binding.exoPlayerView.resizeMode = nextMode
+        }
+
         binding.btnRotateScreen.setOnClickListener {
             requestedOrientation = if (requestedOrientation == ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE) {
                 ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT

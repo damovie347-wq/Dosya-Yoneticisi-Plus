@@ -3,33 +3,34 @@
     android:id="@+id/explorerRoot"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:background="#FFFFFF"
     android:orientation="vertical">
 
-    <!-- Üst Araç Çubuğu (00:03, 00:37) -->
+    <!-- Üst Araç Çubuğu (Orijinal #212121 Koyu Bar: Geri Oku, Başlık + Alt Başlık (E-posta), Arama, Görünüm/Sıralama, Üç Nokta) -->
     <LinearLayout
-        android:id="@+id/explorerToolbar"
+        android:id="@+id/toolbarExplorer"
         android:layout_width="match_parent"
         android:layout_height="56dp"
-        android:background="@color/toolbar_dark"
+        android:background="#212121"
+        android:elevation="4dp"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:paddingStart="6dp"
-        android:paddingEnd="6dp"
-        android:elevation="4dp">
+        android:paddingStart="4dp"
+        android:paddingEnd="4dp">
 
         <ImageButton
             android:id="@+id/btnBack"
-            android:layout_width="42dp"
-            android:layout_height="42dp"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="Geri"
-            android:src="@drawable/ic_arrow_back" />
+            android:padding="12dp"
+            android:src="@drawable/ic_back_white" />
 
         <LinearLayout
-            android:id="@+id/titleContainer"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
+            android:layout_marginStart="6dp"
             android:layout_weight="1"
             android:orientation="vertical">
 
@@ -38,10 +39,10 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:ellipsize="end"
-                android:maxLines="1"
+                android:singleLine="true"
                 android:text="Ana bellek"
                 android:textColor="#FFFFFF"
-                android:textSize="17sp"
+                android:textSize="18sp"
                 android:textStyle="bold" />
 
             <TextView
@@ -49,81 +50,114 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:ellipsize="end"
-                android:maxLines="1"
-                android:text="daamfgf@gmail.com"
-                android:textColor="#BDBDBD"
+                android:singleLine="true"
+                android:textColor="#CCCCCC"
                 android:textSize="12sp"
                 android:visibility="gone" />
         </LinearLayout>
 
-        <!-- Satır İçi Hızlı Arama Kutusu -->
-        <EditText
-            android:id="@+id/etInlineSearch"
-            android:layout_width="0dp"
-            android:layout_height="38dp"
-            android:layout_marginStart="6dp"
-            android:layout_weight="1"
-            android:background="@drawable/bg_search_box"
-            android:hint="Dosya veya klasör ara..."
-            android:imeOptions="actionSearch"
-            android:inputType="text"
-            android:paddingStart="12dp"
-            android:paddingEnd="12dp"
-            android:singleLine="true"
-            android:textColor="#FFFFFF"
-            android:textColorHint="#9E9E9E"
-            android:textSize="14sp"
-            android:visibility="gone" />
-
         <ImageButton
-            android:id="@+id/btnSearchToggle"
-            android:layout_width="42dp"
-            android:layout_height="42dp"
+            android:id="@+id/btnSearchInFolder"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="Ara"
-            android:src="@drawable/ic_search" />
+            android:padding="10dp"
+            android:src="@drawable/ic_search_white" />
 
         <ImageButton
-            android:id="@+id/btnSortView"
-            android:layout_width="42dp"
-            android:layout_height="42dp"
+            android:id="@+id/btnSortAndView"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
             android:background="?attr/selectableItemBackgroundBorderless"
-            android:contentDescription="Görünüm ve Sıralama"
-            android:src="@drawable/ic_sort_view" />
+            android:contentDescription="Görünüm ve Sırala"
+            android:padding="10dp"
+            android:src="@drawable/ic_sort_white" />
 
         <ImageButton
             android:id="@+id/btnExplorerMore"
-            android:layout_width="42dp"
-            android:layout_height="42dp"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
             android:background="?attr/selectableItemBackgroundBorderless"
-            android:contentDescription="Menü"
+            android:contentDescription="Daha Fazla"
+            android:padding="10dp"
             android:src="@drawable/ic_more_vert" />
     </LinearLayout>
 
-    <!-- Alt Gezinti Yolu / Breadcrumb Çubuğu (00:03, 00:28, 00:37) -->
+    <!-- Klasör İçi Arama Çubuğu -->
     <LinearLayout
-        android:id="@+id/pathBarContainer"
+        android:id="@+id/llInlineSearchBar"
         android:layout_width="match_parent"
-        android:layout_height="40dp"
+        android:layout_height="48dp"
+        android:background="#2C2C2C"
         android:gravity="center_vertical"
         android:orientation="horizontal"
         android:paddingStart="12dp"
-        android:paddingEnd="12dp">
+        android:paddingEnd="8dp"
+        android:visibility="gone">
 
         <ImageView
-            android:id="@+id/ivPathRootIcon"
             android:layout_width="20dp"
             android:layout_height="20dp"
-            android:src="@drawable/ic_home_crumb" />
+            android:src="@drawable/ic_search_white" />
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="4dp"
+        <EditText
+            android:id="@+id/etInlineSearch"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:background="@android:color/transparent"
+            android:hint="Dosya veya klasör ara..."
+            android:imeOptions="actionSearch"
+            android:inputType="text"
+            android:singleLine="true"
+            android:textColor="#FFFFFF"
+            android:textColorHint="#9E9E9E"
+            android:textSize="15sp" />
+
+        <ImageButton
+            android:id="@+id/btnCloseInlineSearch"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Kapat"
+            android:padding="6dp"
+            android:src="@drawable/ic_close_white" />
+    </LinearLayout>
+
+    <!-- Orijinal PathBar (Sol: Ev ikonu > Sürücü/Bulut ikonu > Klasör yolu; Sağ: Boş alan bilgisi ve Üst Klasöre Çık oku) -->
+    <LinearLayout
+        android:id="@+id/llBreadcrumbBar"
+        android:layout_width="match_parent"
+        android:layout_height="44dp"
+        android:background="#FFFFFF"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="8dp"
+        android:paddingEnd="6dp">
+
+        <ImageView
+            android:id="@+id/ivHomeCrumb"
+            android:layout_width="28dp"
+            android:layout_height="28dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:padding="2dp"
+            android:src="@drawable/icon_home" />
+
+        <ImageView
+            android:layout_width="8dp"
+            android:layout_height="20dp"
+            android:layout_marginStart="2dp"
+            android:layout_marginEnd="2dp"
+            android:src="@drawable/ic_pathbar_divider" />
+
+        <ImageView
+            android:id="@+id/ivRootTypeCrumb"
+            android:layout_width="26dp"
+            android:layout_height="26dp"
             android:layout_marginEnd="4dp"
-            android:text="›"
-            android:textColor="#9E9E9E"
-            android:textSize="16sp" />
+            android:src="@drawable/icon_main_storage_s" />
 
         <HorizontalScrollView
             android:id="@+id/hsvBreadcrumbs"
@@ -133,35 +167,41 @@
             android:scrollbars="none">
 
             <LinearLayout
-                android:id="@+id/llBreadcrumbs"
+                android:id="@+id/llBreadcrumbContainer"
                 android:layout_width="wrap_content"
                 android:layout_height="match_parent"
                 android:gravity="center_vertical"
                 android:orientation="horizontal" />
         </HorizontalScrollView>
 
-        <!-- Sağ Pill Butonu: "KULLANILAN 67%" veya "BOŞALT" veya "Boş 38 MB" -->
         <TextView
-            android:id="@+id/btnPathRightAction"
+            android:id="@+id/tvStorageBadge"
             android:layout_width="wrap_content"
-            android:layout_height="28dp"
-            android:background="@drawable/bg_used_pill"
-            android:gravity="center"
-            android:paddingStart="10dp"
-            android:paddingEnd="10dp"
-            android:text="KULLANILAN 67%"
-            android:textColor="#424242"
-            android:textSize="11sp"
-            android:textStyle="bold" />
+            android:layout_height="wrap_content"
+            android:layout_marginStart="6dp"
+            android:layout_marginEnd="4dp"
+            android:singleLine="true"
+            android:text="Boş 44,5 GB"
+            android:textColor="#777777"
+            android:textSize="12sp" />
+
+        <ImageButton
+            android:id="@+id/btnParentFolderUp"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Üst Klasör"
+            android:padding="4dp"
+            android:src="@drawable/ic_pathbar_up" />
     </LinearLayout>
 
     <View
-        android:id="@+id/pathDivider"
+        android:id="@+id/dividerBreadcrumb"
         android:layout_width="match_parent"
         android:layout_height="1dp"
-        android:background="@color/divider_light" />
+        android:background="#CCCCCC" />
 
-    <!-- İçerik Listesi -->
+    <!-- Dosya Listesi / Izgarası -->
     <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
@@ -173,116 +213,222 @@
             android:layout_height="match_parent">
 
             <androidx.recyclerview.widget.RecyclerView
-                android:id="@+id/rvFiles"
+                android:id="@+id/rvFileList"
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
                 android:clipToPadding="false"
-                android:paddingBottom="72dp"
-                android:scrollbars="vertical" />
+                android:paddingBottom="72dp" />
         </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
 
-        <ProgressBar
-            android:id="@+id/pbLoading"
-            android:layout_width="42dp"
-            android:layout_height="42dp"
-            android:layout_gravity="center"
-            android:indeterminateTint="@color/accent_teal"
-            android:visibility="gone" />
-
-        <TextView
-            android:id="@+id/tvEmptyFolder"
+        <LinearLayout
+            android:id="@+id/llEmptyFolder"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="center"
             android:gravity="center"
-            android:padding="24dp"
-            android:text="Klasör boş"
-            android:textColor="@color/text_secondary_light"
-            android:textSize="15sp"
-            android:visibility="gone" />
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <ImageView
+                android:layout_width="64dp"
+                android:layout_height="64dp"
+                android:alpha="0.45"
+                android:src="@drawable/icon_folder_empty" />
+
+            <TextView
+                android:id="@+id/tvEmptyFolder"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/empty_folder"
+                android:textColor="#757575"
+                android:textSize="15sp" />
+        </LinearLayout>
+
+        <!-- Orijinal APK'daki (00:12) ortada dönen beyaz daire içinde mavi yükleme halkası -->
+        <FrameLayout
+            android:id="@+id/pbLoadingFiles"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_gravity="center"
+            android:background="@drawable/bg_home_icon_squircle"
+            android:elevation="6dp"
+            android:padding="8dp"
+            android:visibility="gone">
+
+            <ProgressBar
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:indeterminate="true" />
+        </FrameLayout>
     </FrameLayout>
 
-    <!-- Alt Çoklu Seçim ve Pano İşlem Çubuğu (Kopyala, Taşı, Sil, Şununla Aç, Arşivle) -->
+    <!-- Alt Çoklu Seçim Çubuğu (Orijinal 01:21: Kopyala | Taşı | Yeniden adlandır | Sil | Daha fazla) -->
     <LinearLayout
         android:id="@+id/bottomActionBar"
         android:layout_width="match_parent"
-        android:layout_height="54dp"
-        android:background="@color/toolbar_dark"
+        android:layout_height="58dp"
+        android:background="#212121"
+        android:elevation="8dp"
         android:gravity="center_vertical"
         android:orientation="horizontal"
         android:visibility="gone">
 
-        <TextView
+        <LinearLayout
             android:id="@+id/btnActionCopy"
             android:layout_width="0dp"
             android:layout_height="match_parent"
             android:layout_weight="1"
             android:background="?attr/selectableItemBackground"
             android:gravity="center"
-            android:text="Kopyala"
-            android:textColor="#FFFFFF"
-            android:textSize="12sp"
-            android:textStyle="bold" />
+            android:orientation="vertical">
 
-        <TextView
+            <ImageView
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:src="@drawable/ic_content_copy" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="@string/action_copy"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp" />
+        </LinearLayout>
+
+        <LinearLayout
             android:id="@+id/btnActionMove"
             android:layout_width="0dp"
             android:layout_height="match_parent"
             android:layout_weight="1"
             android:background="?attr/selectableItemBackground"
             android:gravity="center"
-            android:text="Taşı"
-            android:textColor="#FFFFFF"
-            android:textSize="12sp"
-            android:textStyle="bold" />
+            android:orientation="vertical">
 
-        <TextView
+            <ImageView
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:src="@drawable/ic_content_cut" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="@string/action_move"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp" />
+        </LinearLayout>
+
+        <LinearLayout
             android:id="@+id/btnActionRename"
             android:layout_width="0dp"
             android:layout_height="match_parent"
             android:layout_weight="1"
             android:background="?attr/selectableItemBackground"
             android:gravity="center"
-            android:text="Adlandır"
-            android:textColor="#FFFFFF"
-            android:textSize="12sp"
-            android:textStyle="bold" />
+            android:orientation="vertical">
 
-        <TextView
+            <ImageView
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:src="@drawable/ic_rename" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="@string/action_rename"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp" />
+        </LinearLayout>
+
+        <LinearLayout
             android:id="@+id/btnActionDelete"
             android:layout_width="0dp"
             android:layout_height="match_parent"
             android:layout_weight="1"
             android:background="?attr/selectableItemBackground"
             android:gravity="center"
-            android:text="Sil"
-            android:textColor="#FF8A80"
-            android:textSize="12sp"
-            android:textStyle="bold" />
+            android:orientation="vertical">
 
-        <TextView
-            android:id="@+id/btnActionOpenWith"
+            <ImageView
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:src="@drawable/ic_delete" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="@string/action_delete"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/btnActionMore"
             android:layout_width="0dp"
             android:layout_height="match_parent"
             android:layout_weight="1"
             android:background="?attr/selectableItemBackground"
             android:gravity="center"
-            android:text="Şununla Aç"
-            android:textColor="@color/accent_teal"
-            android:textSize="12sp"
-            android:textStyle="bold" />
+            android:orientation="vertical">
+
+            <ImageView
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:src="@drawable/ic_more_vert" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="@string/action_more"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Kopyala/Taşı Yapıştırma Çubuğu -->
+    <LinearLayout
+        android:id="@+id/pasteActionBar"
+        android:layout_width="match_parent"
+        android:layout_height="54dp"
+        android:background="#008578"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="16dp"
+        android:paddingEnd="12dp"
+        android:visibility="gone">
 
         <TextView
-            android:id="@+id/btnActionPasteHere"
+            android:id="@+id/tvClipboardStatus"
             android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1.2"
-            android:background="@color/accent_teal"
-            android:gravity="center"
-            android:text="Buraya Yapıştır"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:singleLine="true"
+            android:text="1 öğe kopyalandı"
             android:textColor="#FFFFFF"
-            android:textSize="12sp"
-            android:textStyle="bold"
-            android:visibility="gone" />
+            android:textSize="14sp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btnCancelPaste"
+            style="?android:attr/borderlessButtonStyle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="İPTAL"
+            android:textColor="#E0F2F1" />
+
+        <Button
+            android:id="@+id/btnConfirmPaste"
+            style="?android:attr/borderlessButtonStyle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="BURAYA YAPIŞTIR"
+            android:textColor="#FFFFFF"
+            android:textStyle="bold" />
     </LinearLayout>
+
 </LinearLayout>

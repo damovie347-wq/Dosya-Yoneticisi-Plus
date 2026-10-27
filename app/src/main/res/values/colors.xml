@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <color name="ic_launcher_background">#FFFFFF</color>
     <!-- Dosya Yöneticisi + Orijinal ve Modern Tema Renk Paleti -->
     <color name="toolbar_dark">#212121</color>
     <color name="toolbar_amoled">#000000</color>

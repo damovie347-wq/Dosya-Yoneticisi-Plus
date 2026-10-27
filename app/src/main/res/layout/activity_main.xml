@@ -3,207 +3,236 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:id="@+id/drawerLayout"
     android:layout_width="match_parent"
-    android:layout_height="match_parent">
+    android:layout_height="match_parent"
+    android:fitsSystemWindows="true">
 
-    <!-- Ana İçerik Alanı -->
-    <FrameLayout
-        android:id="@+id/rootContainer"
+    <!-- Ana Ekran İçeriği -->
+    <LinearLayout
+        android:id="@+id/mainContentRoot"
         android:layout_width="match_parent"
-        android:layout_height="match_parent">
+        android:layout_height="match_parent"
+        android:background="#FFFFFF"
+        android:orientation="vertical">
 
+        <!-- Üst Araç Çubuğu (Orijinal #212121 Koyu Bar: Hamburger + Dosya Yöneticisi + + Taç + Üç Nokta) -->
         <LinearLayout
+            android:id="@+id/toolbarMain"
             android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:orientation="vertical">
+            android:layout_height="56dp"
+            android:background="#212121"
+            android:elevation="4dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp">
 
-            <!-- Üst Koyu Araç Çubuğu (00:01) -->
-            <LinearLayout
-                android:id="@+id/topToolbar"
-                android:layout_width="match_parent"
-                android:layout_height="56dp"
-                android:background="@color/toolbar_dark"
-                android:gravity="center_vertical"
-                android:orientation="horizontal"
-                android:paddingStart="8dp"
-                android:paddingEnd="8dp"
-                android:elevation="4dp">
+            <ImageButton
+                android:id="@+id/btnDrawerMenu"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/app_name"
+                android:padding="12dp"
+                android:src="@drawable/ic_menu_white" />
 
-                <ImageButton
-                    android:id="@+id/btnNavDrawer"
-                    android:layout_width="44dp"
-                    android:layout_height="44dp"
-                    android:background="?attr/selectableItemBackgroundBorderless"
-                    android:contentDescription="Menü"
-                    android:src="@drawable/ic_menu_hamburger" />
+            <TextView
+                android:id="@+id/tvToolbarTitle"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:singleLine="true"
+                android:text="@string/app_name"
+                android:textColor="#FFFFFF"
+                android:textSize="20sp"
+                android:textStyle="bold" />
 
-                <TextView
-                    android:id="@+id/tvAppTitle"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="12dp"
-                    android:layout_weight="1"
-                    android:text="@string/app_name"
-                    android:textColor="#FFFFFF"
-                    android:textSize="19sp"
-                    android:textStyle="bold" />
+            <ImageButton
+                android:id="@+id/btnQuickSearch"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/search_hint"
+                android:padding="10dp"
+                android:src="@drawable/ic_search_white"
+                android:visibility="gone" />
 
-                <!-- Hızlı Toplu Bulut Arama Kısayolu -->
-                <ImageButton
-                    android:id="@+id/btnQuickCloudSearch"
-                    android:layout_width="42dp"
-                    android:layout_height="42dp"
-                    android:background="?attr/selectableItemBackgroundBorderless"
-                    android:contentDescription="Toplu Bulut Ara"
-                    android:src="@drawable/ic_search" />
+            <ImageButton
+                android:id="@+id/btnThemeQuickSwitch"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Premium / Tema"
+                android:padding="10dp"
+                android:src="@drawable/ic_colored_crown" />
 
-                <!-- Hızlı Tema Değiştirici (Açık / Koyu / AMOLED) -->
-                <ImageButton
-                    android:id="@+id/btnQuickTheme"
-                    android:layout_width="42dp"
-                    android:layout_height="42dp"
-                    android:background="?attr/selectableItemBackgroundBorderless"
-                    android:contentDescription="Tema Seç"
-                    android:src="@drawable/ic_theme_palette" />
-
-                <!-- Sağ Üst 3 Nokta Menüsü (Ayarlar, Analiz et, Yenile) -->
-                <ImageButton
-                    android:id="@+id/btnMoreMenu"
-                    android:layout_width="42dp"
-                    android:layout_height="42dp"
-                    android:background="?attr/selectableItemBackgroundBorderless"
-                    android:contentDescription="Diğer"
-                    android:src="@drawable/ic_more_vert" />
-            </LinearLayout>
-
-            <!-- 12'li Ana Ekran Izgarası (Yatayda 6-7 sütun, Dikeyde 4 sütun) -->
-            <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
-                android:id="@+id/swipeRefreshHome"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent">
-
-                <androidx.recyclerview.widget.RecyclerView
-                    android:id="@+id/rvHomeGrid"
-                    android:layout_width="match_parent"
-                    android:layout_height="match_parent"
-                    android:clipToPadding="false"
-                    android:paddingStart="12dp"
-                    android:paddingTop="18dp"
-                    android:paddingEnd="12dp"
-                    android:paddingBottom="18dp"
-                    android:scrollbars="none" />
-            </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
+            <ImageButton
+                android:id="@+id/btnMoreMenu"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/settings_title"
+                android:padding="10dp"
+                android:src="@drawable/ic_more_vert" />
         </LinearLayout>
 
-        <!-- Sol Kenar Hızlı Çekmece Kulpu (01:45) -->
-        <TextView
-            android:id="@+id/edgeDrawerHandle"
-            android:layout_width="22dp"
-            android:layout_height="44dp"
-            android:layout_gravity="start|center_vertical"
-            android:background="#66757575"
-            android:gravity="center"
-            android:text="›"
-            android:textColor="#FFFFFF"
-            android:textSize="18sp"
-            android:textStyle="bold" />
-    </FrameLayout>
+        <!-- Kategori Izgarası (Orijinal DesktopGridView düzeni) -->
+        <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+            android:id="@+id/swipeRefreshHome"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1">
 
-    <!-- Sol Gezinme Çekmecesi (01:43 - 01:44) -->
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/rvHomeCategories"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:clipToPadding="false"
+                android:overScrollMode="never"
+                android:paddingStart="12dp"
+                android:paddingTop="14dp"
+                android:paddingEnd="12dp"
+                android:paddingBottom="14dp" />
+        </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
+    </LinearLayout>
+
+    <!-- Sol Gezinti Çekmecesi (Orijinal 280dp genişlik, üstte Klasör / Yıldız / Saat ikon sekmeleri, altta DÜZENLE / TEMA butonu) -->
     <LinearLayout
-        android:id="@+id/navDrawerContainer"
-        android:layout_width="300dp"
+        android:id="@+id/drawerContainer"
+        android:layout_width="280dp"
         android:layout_height="match_parent"
         android:layout_gravity="start"
-        android:background="@color/bg_light"
+        android:background="#FFFFFF"
         android:clickable="true"
         android:focusable="true"
         android:orientation="vertical">
 
-        <!-- Çekmece Üst Sekmeleri (Yer İmleri / Favoriler / Son Gezilenler) -->
+        <!-- Üst 3 İkonlu Sekme Çubuğu (Klasör | Favoriler ★ | Geçmiş 🕒) -->
         <LinearLayout
             android:id="@+id/drawerHeaderTabs"
             android:layout_width="match_parent"
             android:layout_height="52dp"
+            android:background="#FAFAFA"
             android:gravity="center_vertical"
             android:orientation="horizontal">
 
-            <TextView
+            <LinearLayout
+                android:id="@+id/tabDrawerLocations"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:background="?attr/selectableItemBackground"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <ImageView
+                    android:id="@+id/ivTabLocations"
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:src="@drawable/ic_drawer_folder"
+                    app:tint="#202020" />
+
+                <View
+                    android:id="@+id/indTabLocations"
+                    android:layout_width="match_parent"
+                    android:layout_height="3dp"
+                    android:layout_marginTop="8dp"
+                    android:background="#008578" />
+            </LinearLayout>
+
+            <LinearLayout
                 android:id="@+id/tabDrawerBookmarks"
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
                 android:layout_weight="1"
+                android:background="?attr/selectableItemBackground"
                 android:gravity="center"
-                android:text="📁 Yer İmleri"
-                android:textColor="@color/accent_teal"
-                android:textSize="13sp"
-                android:textStyle="bold" />
+                android:orientation="vertical">
 
-            <TextView
-                android:id="@+id/tabDrawerFavorites"
+                <ImageView
+                    android:id="@+id/ivTabBookmarks"
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:src="@drawable/ic_star_bookmark"
+                    app:tint="#808080" />
+
+                <View
+                    android:id="@+id/indTabBookmarks"
+                    android:layout_width="match_parent"
+                    android:layout_height="3dp"
+                    android:layout_marginTop="8dp"
+                    android:background="#008578"
+                    android:visibility="invisible" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/tabDrawerHistory"
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
                 android:layout_weight="1"
+                android:background="?attr/selectableItemBackground"
                 android:gravity="center"
-                android:text="★ Favoriler"
-                android:textColor="#757575"
-                android:textSize="13sp" />
+                android:orientation="vertical">
 
-            <TextView
-                android:id="@+id/tabDrawerRecent"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1"
-                android:gravity="center"
-                android:text="🕒 Geçmiş"
-                android:textColor="#757575"
-                android:textSize="13sp" />
+                <ImageView
+                    android:id="@+id/ivTabHistory"
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:src="@drawable/ic_history_clock"
+                    app:tint="#808080" />
+
+                <View
+                    android:id="@+id/indTabHistory"
+                    android:layout_width="match_parent"
+                    android:layout_height="3dp"
+                    android:layout_marginTop="8dp"
+                    android:background="#008578"
+                    android:visibility="invisible" />
+            </LinearLayout>
         </LinearLayout>
 
         <View
             android:layout_width="match_parent"
-            android:layout_height="2dp"
-            android:background="@color/accent_teal" />
+            android:layout_height="1dp"
+            android:background="#D2D2D2" />
 
         <androidx.recyclerview.widget.RecyclerView
             android:id="@+id/rvDrawerItems"
             android:layout_width="match_parent"
             android:layout_height="0dp"
             android:layout_weight="1"
-            android:clipToPadding="false"
-            android:paddingTop="4dp"
-            android:paddingBottom="4dp" />
+            android:overScrollMode="never" />
 
         <View
-            android:id="@+id/drawerBottomDivider"
             android:layout_width="match_parent"
             android:layout_height="1dp"
-            android:background="#E0E0E0" />
+            android:background="#D2D2D2" />
 
-        <!-- Alt Hızlı Tema ve Ayarlar Çubuğu (Reklam/Paywall yerine Kişisel Tema Seçici) -->
+        <!-- Alt Buton (DÜZENLE / TEMA SEÇİMİ) -->
         <LinearLayout
             android:id="@+id/btnDrawerThemeFooter"
             android:layout_width="match_parent"
             android:layout_height="48dp"
             android:background="?attr/selectableItemBackground"
-            android:gravity="center_vertical"
+            android:gravity="center"
             android:orientation="horizontal"
             android:paddingStart="16dp"
             android:paddingEnd="16dp">
 
             <ImageView
-                android:layout_width="22dp"
-                android:layout_height="22dp"
-                android:src="@drawable/ic_theme_palette" />
+                android:id="@+id/ivDrawerFooterIcon"
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:layout_marginEnd="8dp"
+                android:src="@drawable/ic_colored_crown" />
 
             <TextView
-                android:id="@+id/tvDrawerThemeLabel"
-                android:layout_width="0dp"
+                android:id="@+id/tvCurrentThemeBadge"
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="14dp"
-                android:layout_weight="1"
-                android:text="TEMA: AÇIK / KOYU / AMOLED"
-                android:textColor="@color/accent_teal"
-                android:textSize="13sp"
+                android:text="DÜZENLE"
+                android:textColor="#008578"
+                android:textSize="14sp"
                 android:textStyle="bold" />
         </LinearLayout>
     </LinearLayout>

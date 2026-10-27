@@ -4,6 +4,8 @@ import java.io.Serializable
 
 enum class HomeCategoryType {
     MAIN_STORAGE,
+    SD_CARD,
+    USB_STORAGE,
     DOWNLOADS,
     STORAGE_ANALYSIS,
     IMAGES,
@@ -22,7 +24,12 @@ data class HomeCategoryItem(
     val title: String,
     val subtitle: String,
     val iconRes: Int,
-    val progressPercent: Int = -1
+    val badgeCount: Int = 0,
+    val usedBytes: Long = 0L,
+    val totalBytes: Long = 0L,
+    val showStorageBar: Boolean = false,
+    val showPieChart: Boolean = false,
+    val piePercent: Int = 0
 )
 
 enum class FileSourceType {
@@ -38,47 +45,37 @@ data class FileItem(
     val isDirectory: Boolean,
     val size: Long,
     val lastModified: Long,
-    val childCount: Int = 0,
+    val childCount: Int = -1,
     val mimeType: String = "",
     val sourceType: FileSourceType = FileSourceType.LOCAL,
-    // Bulut ve Toplu Arama için Hesap Bilgileri
     val accountId: String = "",
     val accountEmailOrLabel: String = "",
     val providerName: String = "",
     val downloadUrl: String = "",
-    val parentId: String = "",
-    val sectionHeader: String = ""
+    val thumbnailUrl: String = "",
+    val parentId: String = ""
 ) : Serializable {
+
     val extension: String
         get() = name.substringAfterLast('.', "").lowercase()
 
-    fun isVideoFile(): Boolean {
-        if (mimeType.startsWith("video/")) return true
-        return extension in VIDEO_EXTENSIONS
-    }
+    val isVideo: Boolean
+        get() = extension in VIDEO_EXTENSIONS || mimeType.startsWith("video/")
 
-    fun isAudioFile(): Boolean {
-        if (mimeType.startsWith("audio/")) return true
-        return extension in AUDIO_EXTENSIONS
-    }
+    val isAudio: Boolean
+        get() = extension in AUDIO_EXTENSIONS || mimeType.startsWith("audio/")
 
-    fun isImageFile(): Boolean {
-        if (mimeType.startsWith("image/")) return true
-        return extension in IMAGE_EXTENSIONS
-    }
+    val isImage: Boolean
+        get() = extension in IMAGE_EXTENSIONS || mimeType.startsWith("image/")
 
-    fun isDocumentFile(): Boolean {
-        return extension in DOC_EXTENSIONS ||
-            mimeType.contains("pdf") ||
-            mimeType.contains("document") ||
-            mimeType.contains("spreadsheet") ||
-            mimeType.contains("presentation") ||
-            mimeType.startsWith("text/")
-    }
+    val isDocument: Boolean
+        get() = extension in DOC_EXTENSIONS || mimeType.startsWith("text/") || mimeType.contains("pdf") || mimeType.contains("document") || mimeType.contains("spreadsheet") || mimeType.contains("presentation")
 
-    fun isArchiveFile(): Boolean {
-        return extension in ARCHIVE_EXTENSIONS
-    }
+    val isArchive: Boolean
+        get() = extension in ARCHIVE_EXTENSIONS
+
+    val isApk: Boolean
+        get() = extension == "apk" || extension == "apks" || extension == "xapk" || mimeType == "application/vnd.android.package-archive"
 
     companion object {
         val VIDEO_EXTENSIONS = setOf(
@@ -96,12 +93,12 @@ data class FileItem(
             "csv", "json", "xml", "html", "epub", "odt", "ods", "odp", "log", "ini"
         )
         val ARCHIVE_EXTENSIONS = setOf(
-            "zip", "rar", "7z", "tar", "gz", "bz2", "xz", "iso", "torrent", "apk", "apks", "xapk"
+            "zip", "rar", "7z", "tar", "gz", "bz2", "xz", "iso", "torrent"
         )
     }
 }
 
-enum class CloudProviderType(val displayName: String, val prefFileName: String) {
+enum class CloudProviderType(val displayName: String, val prefName: String) {
     DROPBOX("Dropbox", "DropboxPrefs"),
     GOOGLE_DRIVE("Google Drive", "GoogleDrivePrefs"),
     ONEDRIVE("OneDrive", "OneDrivePrefs"),
@@ -114,19 +111,24 @@ data class CloudAccount(
     val id: String,
     val provider: CloudProviderType,
     val emailOrName: String,
-    val accessToken: String,
+    val displayName: String = emailOrName,
+    val accessToken: String = "",
     val refreshToken: String = "",
-    val serverUrl: String = "",     // Nextcloud / WebDAV için
-    val username: String = "",      // Nextcloud / Yandex WebDAV için
-    val freeQuotaBytes: Long = -1L,
-    val totalQuotaBytes: Long = -1L,
-    val addedAt: Long = System.currentTimeMillis()
-) : Serializable
+    val serverUrl: String = "",
+    val username: String = "",
+    val usedQuotaBytes: Long = 0L,
+    val totalQuotaBytes: Long = 15L * 1024 * 1024 * 1024,
+    val addedTimestamp: Long = System.currentTimeMillis()
+) : Serializable {
+    val freeQuotaBytes: Long
+        get() = (totalQuotaBytes - usedQuotaBytes).coerceAtLeast(0L)
+}
 
-enum class RemoteProtocolType(val displayName: String, val defaultPort: Int, val badge: String) {
+enum class RemoteProtocolType(val displayName: String, val defaultPort: Int, val shortTag: String) {
     LAN("Yerel Ağ", 445, "SMB"),
     SMB("SMB", 445, "SMB"),
     FTP("FTP", 21, "FTP"),
+    FTPS("FTPS", 990, "FTPS"),
     SFTP("SFTP", 22, "SFTP"),
     WEBDAV("WebDAV", 443, "DAV")
 }
@@ -135,11 +137,10 @@ data class RemoteAccount(
     val id: String,
     val protocol: RemoteProtocolType,
     val host: String,
-    val port: Int,
-    val displayName: String,
-    val username: String,
-    val password: String,
+    val port: Int = protocol.defaultPort,
+    val username: String = "anonymous",
+    val password: String = "",
     val initialPath: String = "/",
-    val anonymous: Boolean = false,
-    val ftps: Boolean = false
+    val displayName: String = host,
+    val isAnonymous: Boolean = false
 ) : Serializable

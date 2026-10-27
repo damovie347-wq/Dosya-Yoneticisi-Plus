@@ -1,7 +1,6 @@
 package com.alphainventor.filemanager.ui
 
-import androidx.core.content.ContextCompat
-
+import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
 import android.text.Editable
@@ -11,15 +10,19 @@ import android.widget.EditText
 import android.widget.PopupMenu
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.alphainventor.filemanager.R
 import com.alphainventor.filemanager.cloud.CloudManager
 import com.alphainventor.filemanager.core.LocalFileRepository
 import com.alphainventor.filemanager.databinding.ActivityFileExplorerBinding
 import com.alphainventor.filemanager.model.CloudAccount
+import com.alphainventor.filemanager.model.CloudProviderType
 import com.alphainventor.filemanager.model.FileItem
 import com.alphainventor.filemanager.model.FileSourceType
 import com.alphainventor.filemanager.model.RemoteAccount
@@ -36,295 +39,551 @@ import kotlinx.coroutines.launch
 import java.io.File
 import java.util.Stack
 
+/**
+ * Orijinal Dosya Yöneticisi + 3.6.7 Dosya ve Bulut Gezgini (00:11 - 00:23 ve 01:08 - 01:27):
+ * - Üstte Koyu Bar: Geri Oku, Başlık (Google Drive / Ana bellek / Videolar) ve Alt Başlık (E-posta), Büyüteç, Görünüm/Sırala, Üç Nokta
+ * - Altında PathBar: Ev ikonu > Sürücü/Bulut ikonu > Klasör yolu, sağda Boş alan veya Üst Klasöre Çık oku
+ * - Yüklenirken ortada yuvarlak beyaz daire içinde mavi yükleme halkası (00:12)
+ * - Liste ve Izgara (Grid) görünümü geçişi (01:08 Videolar ızgara görünümü)
+ * - Uzun basınca alt aksiyon barı: Kopyala | Taşı | Yeniden adlandır | Sil | Daha fazla -> Paylaş, Yer İmi Ekle, Şununla aç, Özellikler, Ayarlar
+ */
 class FileExplorerActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityFileExplorerBinding
-    private lateinit var fileAdapter: FileListAdapter
+    private lateinit var adapter: FileListAdapter
 
     private var mode: String = "LOCAL" // LOCAL, CATEGORY, CLOUD, REMOTE
     private var currentPath: String = ""
     private var categoryName: String = ""
     private var cloudAccount: CloudAccount? = null
     private var remoteAccount: RemoteAccount? = null
-    private val cloudFolderStack = Stack<Pair<String, String>>() // Pair<folderId, folderTitle>
 
-    private var allLoadedItems: List<FileItem> = emptyList()
-    private var currentSortBy: Int = 0
+    private data class CloudCrumb(val id: String, val name: String)
+    private val cloudNavStack = Stack<CloudCrumb>()
+    private var fullCurrentItems: List<FileItem> = emptyList()
+
+    /**
+     * Google Drive ilk açılışta OAuth kullanıcı onayı (UserRecoverableAuthException) isterse
+     * izin ekranını açar ve onay sonrası klasörü otomatik yeniler.
+     */
+    private val driveConsentLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            loadCurrentDirectory(forceRefresh = true)
+        } else {
+            Toast.makeText(this, "Google Drive erişim izni verilmedi.", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityFileExplorerBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        ThemeManager.applyWindowColors(this, binding.explorerRoot, binding.explorerToolbar)
-        binding.pathDivider.setBackgroundColor(ThemeManager.getDividerColor(this))
-
         mode = intent.getStringExtra("MODE") ?: "LOCAL"
         currentPath = intent.getStringExtra("PATH") ?: LocalFileRepository.rootStorageDir.absolutePath
         categoryName = intent.getStringExtra("CATEGORY") ?: ""
+        val preferGrid = intent.getBooleanExtra("PREFER_GRID", false)
+
         @Suppress("DEPRECATION")
         cloudAccount = intent.getSerializableExtra("CLOUD_ACCOUNT") as? CloudAccount
         @Suppress("DEPRECATION")
         remoteAccount = intent.getSerializableExtra("REMOTE_ACCOUNT") as? RemoteAccount
 
-        setupRecyclerView()
-        setupToolbarAndSearch()
-        setupBottomActionBar()
+        setupToolbarAndActions()
+        setupRecyclerView(preferGrid)
+        applyCurrentTheme()
 
         when (mode) {
             "CLOUD" -> {
-                val acc = cloudAccount ?: return finish()
+                val acc = cloudAccount
+                if (acc == null) {
+                    finish()
+                    return
+                }
+                val initFolder = intent.getStringExtra("INITIAL_FOLDER_ID") ?: "root"
+                val initTitle = intent.getStringExtra("TITLE") ?: acc.provider.displayName
+                cloudNavStack.push(CloudCrumb(initFolder, initTitle))
                 binding.tvExplorerTitle.text = acc.provider.displayName
                 binding.tvExplorerSubtitle.visibility = View.VISIBLE
                 binding.tvExplorerSubtitle.text = acc.emailOrName
-                binding.btnPathRightAction.text = if (acc.freeQuotaBytes > 0) {
-                    "Boş ${FormatUtils.formatSize(acc.freeQuotaBytes)}"
-                } else "Bulut"
-                val initFolder = intent.getStringExtra("INITIAL_FOLDER_ID") ?: "root"
-                val initTitle = intent.getStringExtra("TITLE") ?: acc.provider.displayName
-                cloudFolderStack.push(initFolder to initTitle)
-                loadCurrentContent()
+                binding.ivRootTypeCrumb.setImageResource(
+                    when (acc.provider) {
+                        CloudProviderType.GOOGLE_DRIVE -> R.drawable.cloud_icon_googledrive
+                        CloudProviderType.DROPBOX -> R.drawable.cloud_icon_dropbox
+                        CloudProviderType.ONEDRIVE -> R.drawable.cloud_icon_onedrive
+                        CloudProviderType.BOX -> R.drawable.cloud_icon_box
+                        CloudProviderType.NEXTCLOUD -> R.drawable.ic_cloud_nextcloud
+                        CloudProviderType.YANDEX -> R.drawable.cloud_icon_yandex
+                    }
+                )
+                binding.tvStorageBadge.visibility = View.VISIBLE
+                updateCloudQuotaLabel(acc)
+                binding.btnParentFolderUp.visibility = View.GONE
             }
             "REMOTE" -> {
-                val rem = remoteAccount ?: return finish()
-                binding.tvExplorerTitle.text = rem.host
+                val rem = remoteAccount
+                if (rem == null) {
+                    finish()
+                    return
+                }
+                currentPath = rem.initialPath.ifBlank { "/" }
+                binding.tvExplorerTitle.text = rem.displayName
                 binding.tvExplorerSubtitle.visibility = View.VISIBLE
-                binding.tvExplorerSubtitle.text = "${rem.protocol.displayName} (${rem.displayName})"
-                binding.btnPathRightAction.text = rem.protocol.badge
-                currentPath = rem.initialPath
-                loadCurrentContent()
+                binding.tvExplorerSubtitle.text = "${rem.protocol.displayName} • ${rem.host}:${rem.port}"
+                binding.ivRootTypeCrumb.setImageResource(R.drawable.icon_folder_lan_s)
+                binding.tvStorageBadge.visibility = View.GONE
+                binding.btnParentFolderUp.visibility = View.VISIBLE
             }
             "CATEGORY" -> {
                 val title = intent.getStringExtra("TITLE") ?: categoryName
                 binding.tvExplorerTitle.text = title
-                if (categoryName == "NEW_FILES") {
-                    binding.btnPathRightAction.text = "BOŞALT"
-                    binding.btnPathRightAction.setOnClickListener {
-                        allLoadedItems = emptyList()
-                        fileAdapter.submitList(emptyList())
-                    }
-                } else {
-                    val overview = LocalFileRepository.getStorageOverview()
-                    binding.btnPathRightAction.text = "KULLANILAN ${overview.usedPercent}%"
-                }
-                loadCurrentContent()
+                binding.tvExplorerSubtitle.visibility = View.GONE
+                binding.ivRootTypeCrumb.setImageResource(R.drawable.icon_main_storage_s)
+                binding.tvStorageBadge.visibility = View.GONE
+                binding.btnParentFolderUp.visibility = View.VISIBLE
             }
             else -> {
                 val title = intent.getStringExtra("TITLE") ?: "Ana bellek"
                 binding.tvExplorerTitle.text = title
-                val overview = LocalFileRepository.getStorageOverview()
-                binding.btnPathRightAction.text = "KULLANILAN ${overview.usedPercent}%"
-                binding.btnPathRightAction.setOnClickListener {
-                    startActivity(Intent(this, StorageAnalysisActivity::class.java))
-                }
-                loadCurrentContent()
+                binding.tvExplorerSubtitle.visibility = View.GONE
+                binding.ivRootTypeCrumb.setImageResource(R.drawable.icon_main_storage_s)
+                val overview = LocalFileRepository.getMainStorageOverview()
+                binding.tvStorageBadge.visibility = View.VISIBLE
+                binding.tvStorageBadge.text = "Boş ${FormatUtils.formatSize(overview.freeBytes)}"
+                binding.btnParentFolderUp.visibility = View.VISIBLE
             }
+        }
+
+        loadCurrentDirectory(forceRefresh = false)
+    }
+
+    private fun updateCloudQuotaLabel(acc: CloudAccount) {
+        if (acc.usedQuotaBytes > 0L || acc.totalQuotaBytes > 0L) {
+            binding.tvStorageBadge.text = "Boş ${FormatUtils.formatSize(acc.freeQuotaBytes)}"
+        } else {
+            binding.tvStorageBadge.text = ""
         }
     }
 
-    private fun setupRecyclerView() {
-        fileAdapter = FileListAdapter(
-            showAccountBadgeInSubtitle = false,
+    override fun onResume() {
+        super.onResume()
+        applyCurrentTheme()
+    }
+
+    private fun setupRecyclerView(initialGrid: Boolean) {
+        adapter = FileListAdapter(
             onItemClick = { item -> onFileItemClicked(item) },
             onItemLongClick = { item ->
-                fileAdapter.toggleSelection(item)
-                updateSelectionBar()
-            }
+                adapter.toggleSelection(item)
+                updateSelectionUi()
+            },
+            showAccountOwnerBadge = false
         )
-        binding.rvFiles.apply {
-            layoutManager = LinearLayoutManager(this@FileExplorerActivity)
-            setHasFixedSize(true)
-            adapter = fileAdapter
-        }
+        adapter.isGridMode = initialGrid
+        updateRecyclerLayoutManager()
+        binding.rvFileList.adapter = adapter
+        binding.rvFileList.setHasFixedSize(true)
+
         binding.swipeRefreshFiles.setColorSchemeColors(ContextCompat.getColor(this, R.color.accent_teal))
         binding.swipeRefreshFiles.setOnRefreshListener {
-            loadCurrentContent()
+            loadCurrentDirectory(forceRefresh = true)
         }
     }
 
-    private fun setupToolbarAndSearch() {
-        binding.btnBack.setOnClickListener { onBackPressedDispatcher.onBackPressed() }
+    private fun updateRecyclerLayoutManager() {
+        if (adapter.isGridMode) {
+            val dm = resources.displayMetrics
+            val widthDp = dm.widthPixels / dm.density
+            val spans = when {
+                widthDp >= 720f -> 8
+                widthDp >= 540f -> 5
+                else -> 3
+            }
+            binding.rvFileList.layoutManager = GridLayoutManager(this, spans)
+        } else {
+            binding.rvFileList.layoutManager = LinearLayoutManager(this)
+        }
+    }
 
-        binding.btnSearchToggle.setOnClickListener {
-            if (binding.etInlineSearch.visibility == View.VISIBLE) {
+    private fun setupToolbarAndActions() {
+        binding.btnBack.setOnClickListener {
+            handleBackNavigation()
+        }
+
+        binding.ivHomeCrumb.setOnClickListener {
+            finish()
+        }
+
+        binding.btnParentFolderUp.setOnClickListener {
+            handleBackNavigation()
+        }
+
+        binding.btnSearchInFolder.setOnClickListener {
+            if (binding.llInlineSearchBar.visibility == View.VISIBLE) {
                 binding.etInlineSearch.setText("")
-                binding.etInlineSearch.visibility = View.GONE
-                binding.titleContainer.visibility = View.VISIBLE
-                fileAdapter.submitList(allLoadedItems)
+                binding.llInlineSearchBar.visibility = View.GONE
             } else {
-                binding.titleContainer.visibility = View.GONE
-                binding.etInlineSearch.visibility = View.VISIBLE
+                binding.llInlineSearchBar.visibility = View.VISIBLE
                 binding.etInlineSearch.requestFocus()
             }
         }
 
+        binding.btnCloseInlineSearch.setOnClickListener {
+            binding.etInlineSearch.setText("")
+            binding.llInlineSearchBar.visibility = View.GONE
+        }
+
         binding.etInlineSearch.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
                 val q = s?.toString()?.trim().orEmpty()
                 if (q.isEmpty()) {
-                    fileAdapter.submitList(allLoadedItems)
+                    adapter.submitList(fullCurrentItems)
                 } else {
-                    fileAdapter.submitList(allLoadedItems.filter { it.name.contains(q, ignoreCase = true) })
+                    adapter.submitList(fullCurrentItems.filter { it.name.contains(q, ignoreCase = true) })
                 }
             }
-            override fun afterTextChanged(s: Editable?) {}
         })
 
-        binding.btnSortView.setOnClickListener { v ->
-            val popup = PopupMenu(this, v)
-            popup.menu.add(0, 0, 0, "Ada göre sırala (A-Z)")
-            popup.menu.add(0, 1, 1, "Boyuta göre sırala (Büyükten küçüğe)")
-            popup.menu.add(0, 2, 2, "Tarihe göre sırala (Yeniden eskiye)")
-            popup.menu.add(0, 3, 3, "Türe göre sırala")
-            popup.setOnMenuItemClickListener { m ->
-                currentSortBy = m.itemId
-                loadCurrentContent()
-                true
-            }
-            popup.show()
-        }
-
-        binding.btnExplorerMore.setOnClickListener { v ->
-            val popup = PopupMenu(this, v)
-            popup.menu.add(0, 1, 0, "Yeni Klasör")
-            popup.menu.add(0, 2, 1, "Yeni Metin Dosyası")
-            popup.menu.add(0, 3, 2, if (AppSettings.showHiddenFiles) "Gizli Dosyaları Gizle" else "Gizli Dosyaları Göster")
-            popup.menu.add(0, 4, 3, "Yenile")
-            popup.menu.add(0, 5, 4, "Ayarlar")
+        // Görünüm (Liste / Izgara) ve Sıralama Menüsü
+        binding.btnSortAndView.setOnClickListener { view ->
+            val popup = PopupMenu(this, view)
+            popup.menu.add(0, 10, 0, if (adapter.isGridMode) " Görünüm: Liste Görünümüne Geç" else " Görünüm: Izgara (Kare) Görünümüne Geç")
+            popup.menu.add(0, 1, 1, "Ada Göre Sırala (A → Z)")
+            popup.menu.add(0, 2, 2, "Ada Göre Sırala (Z → A)")
+            popup.menu.add(0, 3, 3, "Boyuta Göre Sırala (Büyükten Küçüğe)")
+            popup.menu.add(0, 4, 4, "Boyuta Göre Sırala (Küçükten Büyüğe)")
+            popup.menu.add(0, 5, 5, "Tarihe Göre Sırala (Yeniden Eskiye)")
+            popup.menu.add(0, 6, 6, "Tarihe Göre Sırala (Eskiden Yeniye)")
             popup.setOnMenuItemClickListener { m ->
                 when (m.itemId) {
-                    1 -> showCreateNewFolderDialog()
-                    2 -> showCreateNewFileDialog()
-                    3 -> {
-                        AppSettings.showHiddenFiles = !AppSettings.showHiddenFiles
-                        loadCurrentContent()
+                    10 -> {
+                        adapter.isGridMode = !adapter.isGridMode
+                        updateRecyclerLayoutManager()
                     }
-                    4 -> loadCurrentContent()
-                    5 -> startActivity(Intent(this, SettingsActivity::class.java))
+                    1 -> { AppSettings.sortBy = 0; AppSettings.sortAscending = true; loadCurrentDirectory() }
+                    2 -> { AppSettings.sortBy = 0; AppSettings.sortAscending = false; loadCurrentDirectory() }
+                    3 -> { AppSettings.sortBy = 1; AppSettings.sortAscending = false; loadCurrentDirectory() }
+                    4 -> { AppSettings.sortBy = 1; AppSettings.sortAscending = true; loadCurrentDirectory() }
+                    5 -> { AppSettings.sortBy = 2; AppSettings.sortAscending = false; loadCurrentDirectory() }
+                    6 -> { AppSettings.sortBy = 2; AppSettings.sortAscending = true; loadCurrentDirectory() }
                 }
                 true
             }
             popup.show()
         }
-    }
 
-    private fun setupBottomActionBar() {
+        binding.btnExplorerMore.setOnClickListener { view ->
+            val popup = PopupMenu(this, view)
+            popup.menu.add(0, 1, 0, getString(R.string.menu_new_folder))
+            popup.menu.add(0, 2, 1, getString(R.string.menu_new_file))
+            popup.menu.add(0, 3, 2, if (AppSettings.showHiddenFiles) "Gizli Dosyaları Gizle" else "Gizli Dosyaları Göster")
+            popup.menu.add(0, 4, 3, getString(R.string.action_select_all))
+            popup.menu.add(0, 5, 4, getString(R.string.menu_refresh))
+            popup.menu.add(0, 6, 5, getString(R.string.settings_title))
+            popup.setOnMenuItemClickListener { m ->
+                when (m.itemId) {
+                    1 -> showCreateNewDialog(isFolder = true)
+                    2 -> showCreateNewDialog(isFolder = false)
+                    3 -> {
+                        AppSettings.showHiddenFiles = !AppSettings.showHiddenFiles
+                        loadCurrentDirectory()
+                    }
+                    4 -> {
+                        adapter.selectAll()
+                        updateSelectionUi()
+                    }
+                    5 -> loadCurrentDirectory(forceRefresh = true)
+                    6 -> startActivity(Intent(this, SettingsActivity::class.java))
+                }
+                true
+            }
+            popup.show()
+        }
+
+        // Alt Çoklu Seçim Aksiyon Çubuğu (01:21: Kopyala | Taşı | Yeniden adlandır | Sil | Daha fazla)
         binding.btnActionCopy.setOnClickListener {
-            ClipboardFileHolder.files = fileAdapter.getSelectedItems().map { File(it.path) }
-            ClipboardFileHolder.isMove = false
-            fileAdapter.clearSelection()
-            binding.btnActionPasteHere.visibility = View.VISIBLE
-            Toast.makeText(this, "Kopyalandı. Hedef klasörde 'Buraya Yapıştır'a dokunun.", Toast.LENGTH_SHORT).show()
+            val selected = adapter.getSelectedItems()
+            if (selected.isNotEmpty()) {
+                LocalFileRepository.clipboardFiles = selected
+                LocalFileRepository.clipboardIsMove = false
+                adapter.clearSelection()
+                updateSelectionUi()
+                showPasteBar()
+            }
         }
+
         binding.btnActionMove.setOnClickListener {
-            ClipboardFileHolder.files = fileAdapter.getSelectedItems().map { File(it.path) }
-            ClipboardFileHolder.isMove = true
-            fileAdapter.clearSelection()
-            binding.btnActionPasteHere.visibility = View.VISIBLE
-            Toast.makeText(this, "Kesildi. Hedef klasörde 'Buraya Yapıştır'a dokunun.", Toast.LENGTH_SHORT).show()
+            val selected = adapter.getSelectedItems()
+            if (selected.isNotEmpty()) {
+                LocalFileRepository.clipboardFiles = selected
+                LocalFileRepository.clipboardIsMove = true
+                adapter.clearSelection()
+                updateSelectionUi()
+                showPasteBar()
+            }
         }
-        binding.btnActionPasteHere.setOnClickListener {
+
+        binding.btnActionRename.setOnClickListener {
+            val selected = adapter.getSelectedItems()
+            if (selected.size == 1) {
+                showRenameDialog(selected.first())
+            } else {
+                Toast.makeText(this, "Yeniden adlandırmak için tek bir öğe seçin.", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        binding.btnActionDelete.setOnClickListener {
+            val selected = adapter.getSelectedItems()
+            if (selected.isNotEmpty()) {
+                showDeleteConfirmDialog(selected)
+            }
+        }
+
+        // Orijinal APK'daki (01:22 - 01:24) "Daha fazla" açılır menüsü:
+        // Paylaş | Yer İmi Ekle | Şununla aç | Özellikler | Ayarlar
+        binding.btnActionMore.setOnClickListener { view ->
+            val selected = adapter.getSelectedItems()
+            if (selected.isEmpty()) return@setOnClickListener
+            val first = selected.first()
+            val popup = PopupMenu(this, view)
+            popup.menu.add(0, 1, 0, getString(R.string.action_share))
+            popup.menu.add(0, 2, 1, getString(R.string.action_bookmark))
+            popup.menu.add(0, 3, 2, getString(R.string.action_open_with))
+            popup.menu.add(0, 4, 3, getString(R.string.action_properties))
+            popup.menu.add(0, 5, 4, getString(R.string.settings_title))
+            if (mode == "LOCAL") {
+                popup.menu.add(0, 6, 5, getString(R.string.action_compress))
+                if (first.extension == "zip") {
+                    popup.menu.add(0, 7, 6, getString(R.string.action_extract))
+                }
+            }
+            popup.setOnMenuItemClickListener { item ->
+                when (item.itemId) {
+                    1 -> LocalFileRepository.shareFile(this, first)
+                    2 -> {
+                        Toast.makeText(this, "Yer imlerine eklendi: ${first.name}", Toast.LENGTH_SHORT).show()
+                        adapter.clearSelection()
+                        updateSelectionUi()
+                    }
+                    3 -> {
+                        LocalFileRepository.openWithExternalChooser(
+                            this,
+                            first,
+                            cloudAccount?.accessToken ?: ""
+                        )
+                        adapter.clearSelection()
+                        updateSelectionUi()
+                    }
+                    4 -> showPropertiesDialog(first)
+                    5 -> startActivity(Intent(this, SettingsActivity::class.java))
+                    6 -> showCompressZipDialog(selected)
+                    7 -> extractZipHere(first)
+                }
+                true
+            }
+            popup.show()
+        }
+
+        binding.btnCancelPaste.setOnClickListener {
+            LocalFileRepository.clipboardFiles = emptyList()
+            binding.pasteActionBar.visibility = View.GONE
+        }
+
+        binding.btnConfirmPaste.setOnClickListener {
             if (mode == "LOCAL") {
                 lifecycleScope.launch {
-                    val dest = File(currentPath)
-                    for (f in ClipboardFileHolder.files) {
-                        LocalFileRepository.copyOrMoveFile(f, dest, ClipboardFileHolder.isMove)
-                    }
-                    ClipboardFileHolder.files = emptyList()
-                    binding.btnActionPasteHere.visibility = View.GONE
-                    binding.bottomActionBar.visibility = View.GONE
-                    loadCurrentContent()
+                    binding.pbLoadingFiles.visibility = View.VISIBLE
+                    val count = LocalFileRepository.pasteClipboardTo(File(currentPath))
+                    binding.pbLoadingFiles.visibility = View.GONE
+                    binding.pasteActionBar.visibility = View.GONE
+                    Toast.makeText(this@FileExplorerActivity, "$count öğe aktarıldı.", Toast.LENGTH_SHORT).show()
+                    loadCurrentDirectory(forceRefresh = true)
                 }
             }
         }
-        binding.btnActionRename.setOnClickListener {
-            val first = fileAdapter.getSelectedItems().firstOrNull() ?: return@setOnClickListener
-            showRenameDialog(first)
-        }
-        binding.btnActionDelete.setOnClickListener {
-            val selected = fileAdapter.getSelectedItems()
-            if (selected.isEmpty()) return@setOnClickListener
-            AlertDialog.Builder(this)
-                .setTitle("Dosyaları Sil")
-                .setMessage("${selected.size} öğe silinsin mi?")
-                .setPositiveButton("Sil") { _, _ ->
-                    lifecycleScope.launch {
-                        for (item in selected) {
-                            if (item.sourceType == FileSourceType.LOCAL) {
-                                LocalFileRepository.deleteFileOrRecycle(File(item.path))
-                            }
-                        }
-                        fileAdapter.clearSelection()
-                        updateSelectionBar()
-                        loadCurrentContent()
-                    }
+    }
+
+    private fun updateSelectionUi() {
+        val selected = adapter.getSelectedItems()
+        if (adapter.selectionMode && selected.isNotEmpty()) {
+            binding.bottomActionBar.visibility = View.VISIBLE
+            binding.tvExplorerTitle.text = "${selected.size}/${fullCurrentItems.size}"
+        } else {
+            binding.bottomActionBar.visibility = View.GONE
+            binding.tvExplorerTitle.text = when (mode) {
+                "CLOUD" -> cloudAccount?.provider?.displayName ?: "Bulut"
+                "REMOTE" -> remoteAccount?.displayName ?: "Uzak"
+                "CATEGORY" -> intent.getStringExtra("TITLE") ?: categoryName
+                else -> {
+                    val rootPath = LocalFileRepository.rootStorageDir.absolutePath
+                    if (currentPath == rootPath) "Ana bellek" else File(currentPath).name
                 }
-                .setNegativeButton("İptal", null)
-                .show()
-        }
-        binding.btnActionOpenWith.setOnClickListener {
-            val first = fileAdapter.getSelectedItems().firstOrNull() ?: return@setOnClickListener
-            LocalFileRepository.openWithExternalChooser(this, first, cloudAccount?.accessToken ?: "")
+            }
         }
     }
 
-    private fun updateSelectionBar() {
-        val count = fileAdapter.selectedIds.size
-        binding.bottomActionBar.visibility = if (count > 0 || ClipboardFileHolder.files.isNotEmpty()) View.VISIBLE else View.GONE
+    private fun showPasteBar() {
+        val clip = LocalFileRepository.clipboardFiles
+        if (clip.isNotEmpty()) {
+            binding.pasteActionBar.visibility = View.VISIBLE
+            val verb = if (LocalFileRepository.clipboardIsMove) "taşınacak" else "kopyalandı"
+            binding.tvClipboardStatus.text = "${clip.size} öğe $verb"
+        }
     }
 
-    private fun loadCurrentContent() {
-        binding.pbLoading.visibility = View.VISIBLE
-        updateBreadcrumbViews()
+    private fun loadCurrentDirectory(forceRefresh: Boolean = false) {
+        binding.pbLoadingFiles.visibility = View.VISIBLE
+        binding.llEmptyFolder.visibility = View.GONE
+        renderBreadcrumbs()
 
         lifecycleScope.launch {
-            val items = when (mode) {
+            val list = when (mode) {
                 "CLOUD" -> {
-                    val acc = cloudAccount!!
-                    val currentFolderId = cloudFolderStack.peek().first
-                    CloudManager.listCloudFolder(this@FileExplorerActivity, acc, currentFolderId)
+                    val acc = cloudAccount ?: return@launch
+                    val currentFolderId = if (cloudNavStack.isEmpty()) "root" else cloudNavStack.peek().id
+                    val files = CloudManager.listCloudFolder(this@FileExplorerActivity, acc, currentFolderId, forceRefresh)
+                    val recovery = CloudManager.pendingRecoveryIntent
+                    if (recovery != null) {
+                        binding.pbLoadingFiles.visibility = View.GONE
+                        driveConsentLauncher.launch(recovery)
+                        return@launch
+                    }
+                    // Kota bilgisini arka planda güncelle
+                    launch {
+                        val updatedAcc = CloudManager.fetchGoogleDriveQuota(this@FileExplorerActivity, acc)
+                        cloudAccount = updatedAcc
+                        updateCloudQuotaLabel(updatedAcc)
+                    }
+                    files
                 }
                 "REMOTE" -> {
-                    val rem = remoteAccount!!
+                    val rem = remoteAccount ?: return@launch
                     RemoteManager.listRemoteDirectory(rem, currentPath)
                 }
                 "CATEGORY" -> {
-                    LocalFileRepository.scanCategoryFiles(categoryName)
+                    LocalFileRepository.getCategoryFiles(categoryName)
                 }
                 else -> {
-                    LocalFileRepository.listDirectory(File(currentPath), AppSettings.showHiddenFiles, currentSortBy)
+                    val overview = LocalFileRepository.getMainStorageOverview()
+                    binding.tvStorageBadge.text = "Boş ${FormatUtils.formatSize(overview.freeBytes)}"
+                    LocalFileRepository.listDirectory(File(currentPath))
                 }
             }
-            allLoadedItems = items
-            fileAdapter.submitList(items)
-            binding.pbLoading.visibility = View.GONE
+
+            fullCurrentItems = list
+            adapter.submitList(list)
+            binding.pbLoadingFiles.visibility = View.GONE
             binding.swipeRefreshFiles.isRefreshing = false
-            binding.tvEmptyFolder.visibility = if (items.isEmpty()) View.VISIBLE else View.GONE
+            if (list.isEmpty()) {
+                binding.llEmptyFolder.visibility = View.VISIBLE
+                val err = CloudManager.lastCloudErrorMessage
+                binding.tvEmptyFolder.text = if (mode == "CLOUD" && !err.isNullOrBlank()) {
+                    err
+                } else {
+                    getString(R.string.empty_folder)
+                }
+            } else {
+                binding.llEmptyFolder.visibility = View.GONE
+            }
+            updateSelectionUi()
         }
     }
 
-    private fun updateBreadcrumbViews() {
-        binding.llBreadcrumbs.removeAllViews()
-        val segments: List<String> = when (mode) {
-            "CLOUD" -> cloudFolderStack.map { it.second }
-            "CATEGORY" -> listOf(binding.tvExplorerTitle.text.toString())
+    /**
+     * Videodaki (00:28-00:32) tekrarlanan breadcrumb hatasını kesin olarak önleyen yığın (stack) kontrolü:
+     * Aynı klasöre üst üste basılsa bile breadcrumb'a kopya eklemez.
+     */
+    private fun renderBreadcrumbs() {
+        binding.llBreadcrumbContainer.removeAllViews()
+        val crumbs: List<Pair<String, () -> Unit>> = when (mode) {
+            "CLOUD" -> {
+                cloudNavStack.mapIndexed { index, crumb ->
+                    crumb.name to {
+                        if (index < cloudNavStack.size - 1) {
+                            while (cloudNavStack.size > index + 1) {
+                                cloudNavStack.pop()
+                            }
+                            loadCurrentDirectory(forceRefresh = false)
+                        }
+                    }
+                }
+            }
+            "REMOTE" -> {
+                val parts = currentPath.trim('/').split('/').filter { it.isNotEmpty() }
+                val list = mutableListOf<Pair<String, () -> Unit>>(
+                    (remoteAccount?.displayName ?: "Uzak") to {
+                        if (currentPath != "/") {
+                            currentPath = "/"
+                            loadCurrentDirectory()
+                        }
+                    }
+                )
+                var accPath = ""
+                for (p in parts) {
+                    accPath += "/$p"
+                    val target = accPath
+                    list.add(p to {
+                        if (currentPath != target) {
+                            currentPath = target
+                            loadCurrentDirectory()
+                        }
+                    })
+                }
+                list
+            }
+            "CATEGORY" -> {
+                val rootTitle = intent.getStringExtra("TITLE") ?: categoryName
+                listOf(rootTitle to {})
+            }
             else -> {
                 val rootPath = LocalFileRepository.rootStorageDir.absolutePath
                 val rel = currentPath.removePrefix(rootPath).trim('/')
-                if (rel.isEmpty()) listOf("Ana bellek") else listOf("Ana bellek") + rel.split("/")
+                val list = mutableListOf<Pair<String, () -> Unit>>(
+                    "" to {
+                        if (currentPath != rootPath) {
+                            currentPath = rootPath
+                            loadCurrentDirectory()
+                        }
+                    }
+                )
+                if (rel.isNotEmpty()) {
+                    var build = rootPath
+                    for (segment in rel.split("/")) {
+                        build = "$build/$segment"
+                        val target = build
+                        list.add(segment to {
+                            if (currentPath != target) {
+                                currentPath = target
+                                loadCurrentDirectory()
+                            }
+                        })
+                    }
+                }
+                list
             }
         }
-        for ((index, seg) in segments.withIndex()) {
+
+        val visibleCrumbs = crumbs.filter { it.first.isNotEmpty() }
+        visibleCrumbs.forEachIndexed { idx, (label, action) ->
             val tv = TextView(this).apply {
-                text = if (index < segments.lastIndex) "$seg  ›  " else seg
-                textSize = 13f
+                text = if (idx == 0) label else " ›  $label"
+                textSize = 14f
                 setTextColor(
-                    if (index == segments.lastIndex) ThemeManager.getPrimaryTextColor(this@FileExplorerActivity)
+                    if (idx == visibleCrumbs.lastIndex) ThemeManager.getPrimaryTextColor(this@FileExplorerActivity)
                     else ThemeManager.getSecondaryTextColor(this@FileExplorerActivity)
                 )
+                setPadding(8, 0, 8, 0)
+                setOnClickListener { action() }
             }
-            binding.llBreadcrumbs.addView(tv)
+            binding.llBreadcrumbContainer.addView(tv)
+        }
+
+        binding.hsvBreadcrumbs.post {
+            binding.hsvBreadcrumbs.fullScroll(View.FOCUS_RIGHT)
         }
     }
 
@@ -332,107 +591,94 @@ class FileExplorerActivity : AppCompatActivity() {
         if (item.isDirectory) {
             when (mode) {
                 "CLOUD" -> {
-                    cloudFolderStack.push(item.id to item.name)
-                    loadCurrentContent()
+                    // Aynı klasör zaten en üstteyse tekrar ekleme!
+                    if (cloudNavStack.isEmpty() || cloudNavStack.peek().id != item.id) {
+                        cloudNavStack.push(CloudCrumb(item.id, item.name))
+                    }
+                    loadCurrentDirectory(forceRefresh = false)
                 }
                 "REMOTE" -> {
                     currentPath = item.path
-                    loadCurrentContent()
+                    loadCurrentDirectory()
                 }
                 else -> {
-                    mode = "LOCAL"
+                    // Kategori görünümündeyken (örn. Videolar ızgarasında Download klasörüne tıklandığında) o klasörün içine gir
+                    if (mode == "CATEGORY") {
+                        mode = "LOCAL"
+                    }
                     currentPath = item.path
-                    binding.tvExplorerTitle.text = item.name
-                    loadCurrentContent()
+                    loadCurrentDirectory()
                 }
             }
             return
         }
 
-        // Bulut dosyasına tıklandığında videodaki (00:39 ve 00:55) gibi hem Dahili Oynatıcı hem "Şununla aç" desteği
-        if (item.sourceType == FileSourceType.CLOUD) {
-            showCloudFileOpenDialog(item)
-            return
-        }
-
-        // Yerel dosya açma
         when {
-            item.isVideoFile() && AppSettings.useInternalVideoPlayer -> {
-                startActivity(Intent(this, VideoPlayerActivity::class.java).apply {
-                    putExtra("VIDEO_URL", item.path)
-                    putExtra("VIDEO_TITLE", item.name)
-                })
+            item.isVideo -> {
+                if (AppSettings.useInternalVideoPlayer) {
+                    startActivity(Intent(this, VideoPlayerActivity::class.java).apply {
+                        putExtra("VIDEO_URL", if (item.sourceType == FileSourceType.CLOUD) item.downloadUrl else item.path)
+                        putExtra("VIDEO_TITLE", item.name)
+                        putExtra("AUTH_TOKEN", cloudAccount?.accessToken ?: "")
+                    })
+                } else {
+                    LocalFileRepository.openWithExternalChooser(this, item, cloudAccount?.accessToken ?: "")
+                }
             }
-            item.isImageFile() && AppSettings.useInternalImageViewer -> {
-                startActivity(Intent(this, ImageViewerActivity::class.java).apply {
-                    putExtra("IMAGE_PATH", item.path)
-                    putExtra("IMAGE_TITLE", item.name)
-                })
+            item.isAudio -> {
+                if (AppSettings.useInternalMusicPlayer) {
+                    startActivity(Intent(this, MusicPlayerActivity::class.java).apply {
+                        putExtra("AUDIO_URL", if (item.sourceType == FileSourceType.CLOUD) item.downloadUrl else item.path)
+                        putExtra("AUDIO_TITLE", item.name)
+                        putExtra("AUTH_TOKEN", cloudAccount?.accessToken ?: "")
+                    })
+                } else {
+                    LocalFileRepository.openWithExternalChooser(this, item, cloudAccount?.accessToken ?: "")
+                }
             }
-            item.isAudioFile() && AppSettings.useInternalMusicPlayer -> {
-                startActivity(Intent(this, MusicPlayerActivity::class.java).apply {
-                    putExtra("AUDIO_URL", item.path)
-                    putExtra("AUDIO_TITLE", item.name)
-                })
+            item.isImage -> {
+                if (AppSettings.useInternalImageViewer && item.sourceType == FileSourceType.LOCAL) {
+                    startActivity(Intent(this, ImageViewerActivity::class.java).apply {
+                        putExtra("IMAGE_PATH", item.path)
+                        putExtra("IMAGE_TITLE", item.name)
+                    })
+                } else {
+                    LocalFileRepository.openWithExternalChooser(this, item, cloudAccount?.accessToken ?: "")
+                }
             }
-            (item.extension in setOf("txt", "md", "json", "xml", "log", "ini", "csv", "html") && AppSettings.useInternalTextEditor) -> {
+            (item.extension in setOf("txt", "md", "json", "xml", "log", "ini", "csv", "html") && AppSettings.useInternalTextEditor && item.sourceType == FileSourceType.LOCAL) -> {
                 startActivity(Intent(this, TextEditorActivity::class.java).apply {
                     putExtra("FILE_PATH", item.path)
                     putExtra("FILE_TITLE", item.name)
                 })
             }
-            else -> LocalFileRepository.openWithExternalChooser(this, item)
+            else -> {
+                LocalFileRepository.openWithExternalChooser(this, item, cloudAccount?.accessToken ?: "")
+            }
         }
     }
 
-    /**
-     * Videodaki (00:39 ve 00:55) Google Drive dosyası tıklama davranışı:
-     * Video ise doğrudan Dahili Video Oynatıcıda akış başlatabilir veya "Şununla aç" (MediaInfo, mpvKt, Nova, 1DM+, Seal) açabilir.
-     */
-    private fun showCloudFileOpenDialog(item: FileItem) {
-        if (item.isVideoFile() && AppSettings.useInternalVideoPlayer) {
-            // Doğrudan dahili video oynatıcıda başlat (veya oynatıcı içindeki sağ üst menüden "Şununla aç" seçilebilir)
-            val streamUrl = item.downloadUrl.ifBlank {
-                "https://www.googleapis.com/drive/v3/files/${item.id}?alt=media"
-            }
-            startActivity(Intent(this, VideoPlayerActivity::class.java).apply {
-                putExtra("VIDEO_URL", streamUrl)
-                putExtra("VIDEO_TITLE", item.name)
-                putExtra("AUTH_TOKEN", cloudAccount?.accessToken ?: "")
-            })
-        } else {
-            LocalFileRepository.openWithExternalChooser(this, item, cloudAccount?.accessToken ?: "")
+    private fun showCreateNewDialog(isFolder: Boolean) {
+        if (mode != "LOCAL") {
+            Toast.makeText(this, "Bu işlem şu an yerel depolama klasörlerinde kullanılabilir.", Toast.LENGTH_SHORT).show()
+            return
         }
-    }
-
-    private fun showCreateNewFolderDialog() {
-        if (mode != "LOCAL") return
-        val et = EditText(this).apply { hint = "Klasör adı" }
+        val et = EditText(this).apply {
+            hint = if (isFolder) "Yeni klasör adı" else "dosya.txt"
+            setSingleLine()
+        }
         AlertDialog.Builder(this)
-            .setTitle("Yeni Klasör")
+            .setTitle(if (isFolder) getString(R.string.menu_new_folder) else getString(R.string.menu_new_file))
             .setView(et)
             .setPositiveButton("Oluştur") { _, _ ->
-                val name = et.text.toString().trim()
+                val name = et.text?.toString()?.trim().orEmpty()
                 if (name.isNotEmpty()) {
-                    File(currentPath, name).mkdirs()
-                    loadCurrentContent()
-                }
-            }
-            .setNegativeButton("İptal", null)
-            .show()
-    }
-
-    private fun showCreateNewFileDialog() {
-        if (mode != "LOCAL") return
-        val et = EditText(this).apply { hint = "Dosya adı (örn: notlar.txt)" }
-        AlertDialog.Builder(this)
-            .setTitle("Yeni Dosya")
-            .setView(et)
-            .setPositiveButton("Oluştur") { _, _ ->
-                val name = et.text.toString().trim()
-                if (name.isNotEmpty()) {
-                    File(currentPath, name).createNewFile()
-                    loadCurrentContent()
+                    val ok = if (isFolder) {
+                        LocalFileRepository.createNewFolder(File(currentPath), name)
+                    } else {
+                        LocalFileRepository.createNewFile(File(currentPath), name)
+                    }
+                    if (ok) loadCurrentDirectory(forceRefresh = true)
                 }
             }
             .setNegativeButton("İptal", null)
@@ -440,55 +686,153 @@ class FileExplorerActivity : AppCompatActivity() {
     }
 
     private fun showRenameDialog(item: FileItem) {
-        if (item.sourceType != FileSourceType.LOCAL) return
-        val et = EditText(this).apply { setText(item.name) }
+        val et = EditText(this).apply {
+            setText(item.name)
+            setSingleLine()
+        }
         AlertDialog.Builder(this)
-            .setTitle("Yeniden Adlandır")
+            .setTitle(getString(R.string.action_rename))
             .setView(et)
             .setPositiveButton("Kaydet") { _, _ ->
-                val newName = et.text.toString().trim()
-                if (newName.isNotEmpty()) {
-                    val f = File(item.path)
-                    f.renameTo(File(f.parentFile, newName))
-                    fileAdapter.clearSelection()
-                    updateSelectionBar()
-                    loadCurrentContent()
+                val newName = et.text?.toString()?.trim().orEmpty()
+                if (newName.isNotEmpty() && mode == "LOCAL") {
+                    val ok = LocalFileRepository.renameFile(File(item.path), newName)
+                    adapter.clearSelection()
+                    updateSelectionUi()
+                    if (ok) loadCurrentDirectory(forceRefresh = true)
                 }
             }
             .setNegativeButton("İptal", null)
             .show()
     }
 
+    private fun showDeleteConfirmDialog(items: List<FileItem>) {
+        AlertDialog.Builder(this)
+            .setTitle("Sil (${items.size} öğe)")
+            .setMessage("Seçilen ${items.size} öğeyi silmek istediğinize emin misiniz?")
+            .setPositiveButton("Sil") { _, _ ->
+                lifecycleScope.launch {
+                    val count = LocalFileRepository.deleteFiles(items, moveToRecycleBin = true)
+                    adapter.clearSelection()
+                    updateSelectionUi()
+                    Toast.makeText(this@FileExplorerActivity, "$count öğe silindi.", Toast.LENGTH_SHORT).show()
+                    loadCurrentDirectory(forceRefresh = true)
+                }
+            }
+            .setNegativeButton("Kalsın", null)
+            .show()
+    }
+
+    private fun showCompressZipDialog(items: List<FileItem>) {
+        val et = EditText(this).apply {
+            setText("${items.first().name.substringBeforeLast('.')}.zip")
+            setSingleLine()
+        }
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.action_compress))
+            .setView(et)
+            .setPositiveButton("Sıkıştır") { _, _ ->
+                val zipName = et.text?.toString()?.trim().orEmpty().ifEmpty { "arsiv.zip" }
+                val destZip = File(currentPath, if (zipName.endsWith(".zip")) zipName else "$zipName.zip")
+                lifecycleScope.launch {
+                    binding.pbLoadingFiles.visibility = View.VISIBLE
+                    val ok = LocalFileRepository.compressToZip(items.map { File(it.path) }, destZip)
+                    binding.pbLoadingFiles.visibility = View.GONE
+                    adapter.clearSelection()
+                    updateSelectionUi()
+                    if (ok) loadCurrentDirectory(forceRefresh = true)
+                }
+            }
+            .setNegativeButton("İptal", null)
+            .show()
+    }
+
+    private fun extractZipHere(item: FileItem) {
+        val destDir = File(currentPath, item.name.substringBeforeLast('.'))
+        lifecycleScope.launch {
+            binding.pbLoadingFiles.visibility = View.VISIBLE
+            val ok = LocalFileRepository.extractZip(File(item.path), destDir)
+            binding.pbLoadingFiles.visibility = View.GONE
+            adapter.clearSelection()
+            updateSelectionUi()
+            if (ok) loadCurrentDirectory(forceRefresh = true)
+        }
+    }
+
+    private fun showPropertiesDialog(item: FileItem) {
+        lifecycleScope.launch {
+            val checksumInfo = if (!item.isDirectory && item.sourceType == FileSourceType.LOCAL) {
+                val f = File(item.path)
+                val md5 = LocalFileRepository.computeChecksum(f, "MD5")
+                "\nMD5: $md5"
+            } else ""
+
+            val accountLine = if (item.accountEmailOrLabel.isNotBlank()) {
+                "\nBulut Hesabı: ${item.providerName} (${item.accountEmailOrLabel})"
+            } else ""
+
+            AlertDialog.Builder(this@FileExplorerActivity)
+                .setTitle(getString(R.string.action_properties))
+                .setMessage(
+                    "Ad: ${item.name}\n" +
+                        "Konum: ${item.path}\n" +
+                        "Tür: ${if (item.isDirectory) "Klasör" else item.mimeType.ifBlank { item.extension }}\n" +
+                        "Boyut: ${FormatUtils.formatSizeDetailed(item.size)}\n" +
+                        "Değiştirilme: ${FormatUtils.formatSectionDate(item.lastModified)}" +
+                        accountLine + checksumInfo
+                )
+                .setPositiveButton("Tamam", null)
+                .show()
+        }
+    }
+
+    private fun handleBackNavigation() {
+        if (adapter.selectionMode) {
+            adapter.clearSelection()
+            updateSelectionUi()
+            return
+        }
+        when (mode) {
+            "CLOUD" -> {
+                if (cloudNavStack.size > 1) {
+                    cloudNavStack.pop()
+                    loadCurrentDirectory(forceRefresh = false)
+                } else {
+                    finish()
+                }
+            }
+            "REMOTE" -> {
+                if (currentPath != "/" && currentPath.isNotEmpty()) {
+                    currentPath = currentPath.substringBeforeLast('/', "/").ifEmpty { "/" }
+                    loadCurrentDirectory()
+                } else {
+                    finish()
+                }
+            }
+            "LOCAL" -> {
+                val rootPath = LocalFileRepository.rootStorageDir.absolutePath
+                if (currentPath != rootPath && currentPath.startsWith(rootPath)) {
+                    val parent = File(currentPath).parentFile
+                    if (parent != null && parent.absolutePath.startsWith(rootPath)) {
+                        currentPath = parent.absolutePath
+                        loadCurrentDirectory()
+                        return
+                    }
+                }
+                finish()
+            }
+            else -> finish()
+        }
+    }
+
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        if (fileAdapter.selectedIds.isNotEmpty()) {
-            fileAdapter.clearSelection()
-            updateSelectionBar()
-            return
-        }
-        if (mode == "CLOUD" && cloudFolderStack.size > 1) {
-            cloudFolderStack.pop()
-            loadCurrentContent()
-            return
-        }
-        if (mode == "LOCAL") {
-            val rootPath = LocalFileRepository.rootStorageDir.absolutePath
-            val curFile = File(currentPath)
-            if (curFile.absolutePath != rootPath && curFile.parentFile != null &&
-                curFile.parentFile!!.absolutePath.startsWith(rootPath)
-            ) {
-                currentPath = curFile.parentFile!!.absolutePath
-                binding.tvExplorerTitle.text = curFile.parentFile!!.name
-                loadCurrentContent()
-                return
-            }
-        }
-        @Suppress("DEPRECATION")
-        super.onBackPressed()
+        handleBackNavigation()
     }
-}
 
-object ClipboardFileHolder {
-    var files: List<File> = emptyList()
-    var isMove: Boolean = false
+    private fun applyCurrentTheme() {
+        ThemeManager.applyWindowColors(this, binding.explorerRoot, binding.toolbarExplorer)
+        binding.llBreadcrumbBar.setBackgroundColor(ThemeManager.getSurfaceColor(this))
+        binding.dividerBreadcrumb.setBackgroundColor(ThemeManager.getDividerColor(this))
+    }
 }

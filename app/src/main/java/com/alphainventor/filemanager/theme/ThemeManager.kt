@@ -8,23 +8,25 @@ import android.os.Build
 import android.view.View
 import androidx.appcompat.app.AppCompatDelegate
 
-enum class AppThemeMode(val id: Int, val displayName: String) {
-    LIGHT(0, "Açık Tema (Klasik Beyaz)"),
-    DARK(1, "Koyu Tema (Gece Grisi)"),
-    AMOLED(2, "AMOLED Tam Siyah (#000000 - Maksimum Pil & Sıfır Isınma)");
+enum class AppThemeMode(val id: Int, val titleTr: String) {
+    LIGHT(0, "Açık (Varsayılan)"),
+    DARK(1, "Koyu"),
+    AMOLED(2, "AMOLED (Tam Siyah)");
 
     companion object {
-        fun fromId(id: Int): AppThemeMode = values().firstOrNull { it.id == id } ?: LIGHT
+        fun fromId(id: Int): AppThemeMode = entries.firstOrNull { it.id == id } ?: LIGHT
     }
 }
 
 object ThemeManager {
-    private const val PREF_NAME = "transferable_prefs"
-    private const val KEY_THEME_MODE = "night_mode_theme"
+    private const val PREF_NAME = "FileManagerThemePrefs"
+    private const val KEY_THEME_MODE = "theme_mode"
 
     fun getThemeMode(context: Context): AppThemeMode {
         val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
-        return AppThemeMode.fromId(prefs.getInt(KEY_THEME_MODE, AppThemeMode.LIGHT.id))
+        // Orijinal Dosya Yöneticisi + 3.6.7 varsayılan olarak Açık (LIGHT) tema ile başlar
+        val id = prefs.getInt(KEY_THEME_MODE, AppThemeMode.LIGHT.id)
+        return AppThemeMode.fromId(id)
     }
 
     fun setThemeMode(context: Context, mode: AppThemeMode) {
@@ -32,11 +34,11 @@ object ThemeManager {
             .edit()
             .putInt(KEY_THEME_MODE, mode.id)
             .apply()
-        applySavedTheme(context)
+        applyNightModeFlag(mode)
     }
 
-    fun applySavedTheme(context: Context) {
-        when (getThemeMode(context)) {
+    fun applyNightModeFlag(mode: AppThemeMode) {
+        when (mode) {
             AppThemeMode.LIGHT -> AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO)
             AppThemeMode.DARK, AppThemeMode.AMOLED -> AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES)
         }
@@ -48,8 +50,8 @@ object ThemeManager {
         AppThemeMode.AMOLED -> Color.parseColor("#000000")
     }
 
-    fun getCardColor(context: Context): Int = when (getThemeMode(context)) {
-        AppThemeMode.LIGHT -> Color.parseColor("#FFFFFF")
+    fun getSurfaceColor(context: Context): Int = when (getThemeMode(context)) {
+        AppThemeMode.LIGHT -> Color.parseColor("#FAFAFA")
         AppThemeMode.DARK -> Color.parseColor("#1E1E1E")
         AppThemeMode.AMOLED -> Color.parseColor("#0A0A0A")
     }
@@ -60,7 +62,7 @@ object ThemeManager {
     }
 
     fun getPrimaryTextColor(context: Context): Int = when (getThemeMode(context)) {
-        AppThemeMode.LIGHT -> Color.parseColor("#212121")
+        AppThemeMode.LIGHT -> Color.parseColor("#000000")
         AppThemeMode.DARK -> Color.parseColor("#F5F5F5")
         AppThemeMode.AMOLED -> Color.parseColor("#FFFFFF")
     }
@@ -72,40 +74,48 @@ object ThemeManager {
     }
 
     fun getDividerColor(context: Context): Int = when (getThemeMode(context)) {
-        AppThemeMode.LIGHT -> Color.parseColor("#EEEEEE")
+        AppThemeMode.LIGHT -> Color.parseColor("#E8E8E8")
         AppThemeMode.DARK -> Color.parseColor("#2C2C2C")
         AppThemeMode.AMOLED -> Color.parseColor("#161616")
     }
 
-    fun createHomeCircleDrawable(context: Context): GradientDrawable {
-        val mode = getThemeMode(context)
+    /**
+     * Orijinal APK'daki bg_desktop_shape.xml:
+     * Açık temada #FFFFFF iç dolgu ve #B8B8B8 1dp çerçeve, 18dp yuvarlatılmış köşe.
+     * Koyu temada #242424 iç dolgu ve #3A3A3A çerçeve.
+     * AMOLED temada #0A0A0A iç dolgu ve #262626 çerçeve.
+     */
+    fun createHomeTileSquircle(context: Context): GradientDrawable {
+        val density = context.resources.displayMetrics.density
         return GradientDrawable().apply {
-            shape = GradientDrawable.OVAL
-            when (mode) {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = 18f * density
+            val strokePx = (1f * density).toInt().coerceAtLeast(1)
+            when (getThemeMode(context)) {
                 AppThemeMode.LIGHT -> {
-                    setColor(Color.parseColor("#F5F6F8"))
-                    setStroke(3, Color.parseColor("#D5D8DC"))
+                    setColor(Color.parseColor("#FFFFFF"))
+                    setStroke(strokePx, Color.parseColor("#B8B8B8"))
                 }
                 AppThemeMode.DARK -> {
                     setColor(Color.parseColor("#242424"))
-                    setStroke(3, Color.parseColor("#383838"))
+                    setStroke(strokePx, Color.parseColor("#3A3A3A"))
                 }
                 AppThemeMode.AMOLED -> {
-                    setColor(Color.parseColor("#0A0A0A"))
-                    setStroke(3, Color.parseColor("#262626"))
+                    setColor(Color.parseColor("#080808"))
+                    setStroke(strokePx, Color.parseColor("#242424"))
                 }
             }
         }
     }
 
-    fun applyWindowColors(activity: Activity, rootView: View? = null, toolbarView: View? = null) {
+    fun applyWindowColors(activity: Activity, rootView: View, toolbarView: View? = null) {
+        val bg = getBackgroundColor(activity)
         val toolbarColor = getToolbarColor(activity)
-        val bgColor = getBackgroundColor(activity)
+        rootView.setBackgroundColor(bg)
+        toolbarView?.setBackgroundColor(toolbarColor)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            activity.window.statusBarColor = toolbarColor
+            activity.window.statusBarColor = Color.BLACK
             activity.window.navigationBarColor = if (getThemeMode(activity) == AppThemeMode.AMOLED) Color.BLACK else toolbarColor
         }
-        rootView?.setBackgroundColor(bgColor)
-        toolbarView?.setBackgroundColor(toolbarColor)
     }
 }

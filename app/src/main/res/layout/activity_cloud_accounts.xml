@@ -3,132 +3,136 @@
     android:id="@+id/cloudRoot"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:background="#FFFFFF"
     android:orientation="vertical">
 
-    <!-- Üst Araç Çubuğu (00:30) -->
+    <!-- Üst Araç Çubuğu: Videodaki (00:07 ve 00:55 mavi çizim) ile birebir aynı:
+         Sol: Geri Oku + "Bulut"
+         Sağ: Büyüteç (Tüm Bulut Hesaplarında Arama) + Kalem (Düzenle / Hesap Ekle) -->
     <LinearLayout
-        android:id="@+id/cloudToolbar"
+        android:id="@+id/toolbarCloud"
         android:layout_width="match_parent"
         android:layout_height="56dp"
-        android:background="@color/toolbar_dark"
+        android:background="#212121"
+        android:elevation="4dp"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:paddingStart="6dp"
-        android:paddingEnd="8dp"
-        android:elevation="4dp">
+        android:paddingStart="4dp"
+        android:paddingEnd="4dp">
 
         <ImageButton
             android:id="@+id/btnCloudBack"
-            android:layout_width="42dp"
-            android:layout_height="42dp"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="Geri"
-            android:src="@drawable/ic_arrow_back" />
+            android:padding="12dp"
+            android:src="@drawable/ic_back_white" />
 
         <TextView
             android:id="@+id/tvCloudToolbarTitle"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_marginStart="10dp"
+            android:layout_marginStart="8dp"
             android:layout_weight="1"
-            android:text="@string/cloud"
+            android:singleLine="true"
+            android:text="@string/cat_cloud"
             android:textColor="#FFFFFF"
-            android:textSize="18sp"
+            android:textSize="20sp"
             android:textStyle="bold" />
 
-        <!-- Önbellek İndeksini Yenile / Senkronize Et -->
-        <TextView
-            android:id="@+id/btnSyncCloudIndex"
-            android:layout_width="wrap_content"
-            android:layout_height="34dp"
-            android:background="?attr/selectableItemBackground"
-            android:gravity="center"
-            android:paddingStart="10dp"
-            android:paddingEnd="10dp"
-            android:text="İndeksi Yenile"
-            android:textColor="@color/accent_teal"
-            android:textSize="12sp"
-            android:textStyle="bold" />
-
+        <!-- Kullanıcının videoda (00:54 - 01:01) mavi kalemle çizerek istediği BÜYÜTEÇ (Toplu Arama) butonu -->
         <ImageButton
-            android:id="@+id/btnCloudMore"
-            android:layout_width="42dp"
-            android:layout_height="42dp"
+            android:id="@+id/btnCloudToolbarSearch"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
             android:background="?attr/selectableItemBackgroundBorderless"
-            android:contentDescription="Seçenekler"
-            android:src="@drawable/ic_more_vert" />
+            android:contentDescription="Tüm Bulutlarda Ara"
+            android:padding="12dp"
+            android:src="@drawable/ic_search_white" />
+
+        <!-- Sağdaki Kalem (Düzenle) İkonu -->
+        <ImageButton
+            android:id="@+id/btnBatchAddDrive"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Düzenle"
+            android:padding="12dp"
+            android:src="@drawable/ic_ab_edit" />
     </LinearLayout>
 
-    <!-- KULLANICININ ÖZELLİKLE İSTEDİĞİ ALAN:
-         Bulut depolama ekleme alanının üstünde TOPLU BULUT ARAMA (Unified Multi-Account Cloud Search) -->
+    <!-- Büyütece tıklandığında açılan ve yazdıkça tüm Google Drive/Bulut hesaplarını otomatik tarayan arama çubuğu -->
     <LinearLayout
-        android:id="@+id/unifiedSearchCard"
+        android:id="@+id/cardUnifiedCloudSearch"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginStart="12dp"
-        android:layout_marginTop="10dp"
-        android:layout_marginEnd="12dp"
-        android:layout_marginBottom="6dp"
-        android:background="@drawable/bg_search_box"
+        android:background="#F5F5F5"
         android:orientation="vertical"
-        android:padding="10dp">
-
-        <TextView
-            android:id="@+id/tvUnifiedSearchHeader"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="🔍 Tüm Bulut ve Google Drive Hesaplarında Toplu Ara"
-            android:textColor="@color/accent_teal"
-            android:textSize="12sp"
-            android:textStyle="bold" />
+        android:paddingStart="12dp"
+        android:paddingTop="8dp"
+        android:paddingEnd="12dp"
+        android:paddingBottom="8dp"
+        android:visibility="gone">
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="42dp"
-            android:layout_marginTop="6dp"
+            android:background="@drawable/bg_search_box"
             android:gravity="center_vertical"
-            android:orientation="horizontal">
+            android:orientation="horizontal"
+            android:paddingStart="10dp"
+            android:paddingEnd="6dp">
+
+            <ImageView
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:src="@drawable/ic_search_white"
+                android:tint="#757575" />
 
             <EditText
-                android:id="@+id/etUnifiedCloudQuery"
+                android:id="@+id/etUnifiedCloudSearch"
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
+                android:layout_marginStart="8dp"
                 android:layout_weight="1"
                 android:background="@android:color/transparent"
-                android:hint="Dosya adı yazın (örn: X, av1, mkv, pdf)..."
+                android:hint="Tüm Google Drive hesaplarında dosya ara..."
                 android:imeOptions="actionSearch"
                 android:inputType="text"
-                android:paddingStart="6dp"
-                android:paddingEnd="6dp"
                 android:singleLine="true"
-                android:textColor="@color/text_primary_light"
+                android:textColor="#202020"
                 android:textColorHint="#888888"
                 android:textSize="14sp" />
 
-            <TextView
+            <ImageButton
                 android:id="@+id/btnClearUnifiedSearch"
-                android:layout_width="32dp"
-                android:layout_height="32dp"
-                android:gravity="center"
-                android:text="✕"
-                android:textColor="#888888"
-                android:textSize="15sp"
-                android:visibility="gone" />
+                android:layout_width="34dp"
+                android:layout_height="34dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Temizle"
+                android:padding="6dp"
+                android:src="@drawable/ic_close_white"
+                android:tint="#757575" />
 
             <Button
-                android:id="@+id/btnExecuteUnifiedSearch"
+                android:id="@+id/btnRunUnifiedSearch"
                 android:layout_width="wrap_content"
-                android:layout_height="38dp"
-                android:backgroundTint="@color/accent_teal"
-                android:paddingStart="14dp"
-                android:paddingEnd="14dp"
-                android:text="TÜMÜNDE ARA"
+                android:layout_height="34dp"
+                android:backgroundTint="#008578"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:minWidth="64dp"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:text="ARA"
+                android:textAllCaps="true"
                 android:textColor="#FFFFFF"
                 android:textSize="12sp"
                 android:textStyle="bold" />
         </LinearLayout>
 
-        <!-- Hızlı Tür Filtreleri (Tümü, Video, Belge, Arşiv, Ses) -->
+        <!-- Filtre Seçenekleri -->
         <HorizontalScrollView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -145,56 +149,55 @@
                     android:layout_width="wrap_content"
                     android:layout_height="26dp"
                     android:layout_marginEnd="6dp"
-                    android:background="@drawable/bg_used_pill"
+                    android:background="@drawable/bg_badge_pill"
                     android:gravity="center"
                     android:paddingStart="10dp"
                     android:paddingEnd="10dp"
                     android:text="Tümü"
-                    android:textColor="#212121"
-                    android:textSize="11sp"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:id="@+id/chipFilterVideo"
-                    android:layout_width="wrap_content"
-                    android:layout_height="26dp"
-                    android:layout_marginEnd="6dp"
-                    android:background="@drawable/bg_used_pill"
-                    android:gravity="center"
-                    android:paddingStart="10dp"
-                    android:paddingEnd="10dp"
-                    android:text="🎬 Videolar (.mkv/.mp4/.webm)"
-                    android:textColor="#212121"
+                    android:textColor="#FFFFFF"
                     android:textSize="11sp" />
 
                 <TextView
-                    android:id="@+id/chipFilterDoc"
+                    android:id="@+id/chipFilterVideos"
                     android:layout_width="wrap_content"
                     android:layout_height="26dp"
                     android:layout_marginEnd="6dp"
-                    android:background="@drawable/bg_used_pill"
+                    android:background="@drawable/bg_search_box"
                     android:gravity="center"
                     android:paddingStart="10dp"
                     android:paddingEnd="10dp"
-                    android:text="📄 Belgeler (.pdf/.docx)"
-                    android:textColor="#212121"
+                    android:text="Videolar"
+                    android:textColor="#555555"
                     android:textSize="11sp" />
 
                 <TextView
-                    android:id="@+id/chipFilterArchive"
+                    android:id="@+id/chipFilterDocs"
                     android:layout_width="wrap_content"
                     android:layout_height="26dp"
-                    android:background="@drawable/bg_used_pill"
+                    android:layout_marginEnd="6dp"
+                    android:background="@drawable/bg_search_box"
                     android:gravity="center"
                     android:paddingStart="10dp"
                     android:paddingEnd="10dp"
-                    android:text="📦 Arşiv / Torrent"
-                    android:textColor="#212121"
+                    android:text="Belgeler"
+                    android:textColor="#555555"
+                    android:textSize="11sp" />
+
+                <TextView
+                    android:id="@+id/chipFilterArchives"
+                    android:layout_width="wrap_content"
+                    android:layout_height="26dp"
+                    android:background="@drawable/bg_search_box"
+                    android:gravity="center"
+                    android:paddingStart="10dp"
+                    android:paddingEnd="10dp"
+                    android:text="Arşivler"
+                    android:textColor="#555555"
                     android:textSize="11sp" />
             </LinearLayout>
         </HorizontalScrollView>
 
-        <!-- Paralel Arama Durum Çubuğu -->
+        <!-- İlerleme Çubuğu ve Durum Özeti -->
         <LinearLayout
             android:id="@+id/llUnifiedSearchStatus"
             android:layout_width="match_parent"
@@ -206,25 +209,24 @@
 
             <ProgressBar
                 android:id="@+id/pbUnifiedSearch"
+                style="?android:attr/progressBarStyleSmall"
                 android:layout_width="16dp"
                 android:layout_height="16dp"
-                android:indeterminateTint="@color/accent_teal" />
+                android:layout_marginEnd="8dp" />
 
             <TextView
                 android:id="@+id/tvUnifiedSearchStatus"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
                 android:layout_weight="1"
-                android:text="Tüm Google Drive hesapları paralel taranıyor..."
-                android:textColor="@color/text_secondary_light"
+                android:textColor="#008578"
                 android:textSize="12sp" />
         </LinearLayout>
     </LinearLayout>
 
-    <!-- Toplu Arama Sonuçları Bölümü (Arama yapıldığında görünür) -->
+    <!-- Toplu Arama Sonuçları Bölümü -->
     <LinearLayout
-        android:id="@+id/llUnifiedResultsContainer"
+        android:id="@+id/llUnifiedSearchResultsSection"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
@@ -234,28 +236,29 @@
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="34dp"
-            android:background="#1A26A69A"
+            android:background="#EEEEEE"
             android:gravity="center_vertical"
             android:orientation="horizontal"
-            android:paddingStart="14dp"
-            android:paddingEnd="14dp">
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp">
 
             <TextView
-                android:id="@+id/tvUnifiedResultCount"
+                android:id="@+id/tvSearchResultsHeader"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="Toplu Arama Sonuçları"
-                android:textColor="@color/accent_teal"
+                android:text="Arama Sonuçları"
+                android:textColor="#202020"
                 android:textSize="12sp"
                 android:textStyle="bold" />
 
             <TextView
-                android:id="@+id/btnCloseUnifiedResults"
+                android:id="@+id/btnCloseSearchResults"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
+                android:padding="4dp"
                 android:text="Hesap Listesine Dön ✕"
-                android:textColor="@color/accent_teal"
+                android:textColor="#008578"
                 android:textSize="12sp"
                 android:textStyle="bold" />
         </LinearLayout>
@@ -263,39 +266,46 @@
         <androidx.recyclerview.widget.RecyclerView
             android:id="@+id/rvUnifiedSearchResults"
             android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:scrollbars="vertical" />
+            android:layout_height="match_parent" />
     </LinearLayout>
 
-    <!-- Ekli Bulut Hesapları Listesi (00:30 - 00:36) -->
-    <LinearLayout
-        android:id="@+id/llAccountsListContainer"
+    <!-- Kayıtlı Google Drive & Bulut Hesapları Listesi (Orijinal sublocation_list) -->
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/rvCloudAccounts"
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1"
-        android:orientation="vertical">
+        android:layout_weight="1" />
 
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/rvCloudAccounts"
-            android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_weight="1"
-            android:scrollbars="vertical" />
+    <!-- Alt "+ Bir bulut konumu ekle" Çubuğu (Orijinal sublocation_list_footer ile birebir aynı) -->
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="#E0E0E0" />
 
-        <View
-            android:layout_width="match_parent"
-            android:layout_height="1dp"
-            android:background="@color/divider_light" />
+    <LinearLayout
+        android:id="@+id/btnAddCloudLocation"
+        android:layout_width="match_parent"
+        android:layout_height="52dp"
+        android:background="?attr/selectableItemBackground"
+        android:clickable="true"
+        android:focusable="true"
+        android:gravity="center"
+        android:orientation="horizontal">
 
-        <!-- "+ Bir bulut konumu ekle" Alt Butonu (00:31) -->
+        <ImageView
+            android:layout_width="22dp"
+            android:layout_height="22dp"
+            android:layout_marginEnd="6dp"
+            android:src="@drawable/ic_add_plus"
+            android:tint="#444444" />
+
         <TextView
-            android:id="@+id/btnAddCloudAccount"
-            android:layout_width="match_parent"
-            android:layout_height="52dp"
-            android:background="?attr/selectableItemBackground"
-            android:gravity="center"
-            android:text="@string/add_cloud_location"
-            android:textColor="@color/text_primary_light"
+            android:id="@+id/tvAddCloudFooter"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/cloud_add_location"
+            android:textColor="#202020"
             android:textSize="15sp" />
     </LinearLayout>
+
 </LinearLayout>

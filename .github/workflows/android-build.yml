@@ -1,77 +1,60 @@
-name: Android APK Build (Dosya Yöneticisi +)
+name: Android APK Build (Dosya Yöneticisi + 3.6.7)
 
 on:
   push:
-    branches: [ "main", "master", "**" ]
+    branches: [ "**" ]
   pull_request:
-    branches: [ "main", "master" ]
+    branches: [ "**" ]
   workflow_dispatch:
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build-apk:
-    name: Optimize Edilmiş APK Derle (Debug & İmzalı Release)
+    name: Build Signed APK (Android 5.0 - Android 15+)
     runs-on: ubuntu-latest
 
     steps:
-      - name: Kaynak Kodunu İndir (Checkout)
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: JDK 17 Kurulumu
-        uses: actions/setup-java@v5
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Android SDK Lisanslarını Onayla ve Platform 35 Kur
+      - name: Accept Android SDK Licenses & Install SDK 35
         run: |
-          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
-          export ANDROID_SDK_ROOT="$ANDROID_HOME"
-          SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager 2>/dev/null | sort -V | tail -n 1)
-          if [ -z "$SDKMANAGER" ]; then
-            SDKMANAGER="$ANDROID_HOME/tools/bin/sdkmanager"
-          fi
-          echo "Aktif sdkmanager: $SDKMANAGER"
-          set +o pipefail
-          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
-          set -o pipefail
-          "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Gradle 8.9 Kurulumu ve Önbellek
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.9'
+      - name: Setup Gradle Cache
+        uses: gradle/actions/setup-gradle@v3
 
-      - name: Kişisel İmza Anahtarı (Keystore) Oluştur
+      - name: Grant Execute Permission for Gradlew
+        run: chmod +x gradlew
+
+      - name: Generate Release Signing Keystore
         run: |
           if [ ! -f app/personal-release-key.jks ]; then
-            keytool -genkeypair -v \
-              -keystore app/personal-release-key.jks \
-              -alias filemanagerplus \
-              -keyalg RSA -keysize 2048 -validity 10000 \
-              -storepass android123 -keypass android123 \
-              -dname "CN=Dosya Yoneticisi Plus, OU=Personal, O=AlphaInventorClone, L=Mersin, S=Mersin, C=TR"
+            keytool -genkeypair -v               -keystore app/personal-release-key.jks               -alias filemanagerplus               -keyalg RSA               -keysize 2048               -validity 10000               -storepass android123               -keypass android123               -dname "CN=PersonalUse, OU=Mobile, O=Personal, L=Istanbul, S=TR, C=TR"
           fi
 
-      - name: İmzalı Release ve Debug APK Derle
-        run: |
-          chmod +x gradlew
-          ./gradlew assembleDebug assembleRelease --stacktrace --no-daemon
+      - name: Build Signed Release APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD || 'android123' }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS || 'filemanagerplus' }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD || 'android123' }}
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
 
-      - name: Derlenen APK Dosyalarını Topla ve Yeniden Adlandır
+      - name: Prepare Single Installable APK
         run: |
-          mkdir -p dist-apk
-          REL_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
-          DBG_APK=$(find app/build/outputs/apk/debug -name "*.apk" | head -n 1)
-          cp "$REL_APK" "dist-apk/Dosya_Yoneticisi_Plus_v3.6.7_Release_Signed.apk"
-          cp "$DBG_APK" "dist-apk/Dosya_Yoneticisi_Plus_v3.6.7_Debug.apk"
-          ls -lh dist-apk/
+          mkdir -p output-apk
+          find app/build/outputs/apk/release -name "*.apk" -exec cp {} output-apk/Dosya_Yoneticisi_Plus_v3.6.7.apk \;
+          ls -lh output-apk/
 
-      - name: APK Dosyalarını GitHub Artifacts Olarak Yükle
+      - name: Upload Signed APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Dosya-Yoneticisi-Plus-APK
-          path: dist-apk/*.apk
+          name: Dosya-Yoneticisi-Plus-v3.6.7-APK
+          path: output-apk/Dosya_Yoneticisi_Plus_v3.6.7.apk
           if-no-files-found: error

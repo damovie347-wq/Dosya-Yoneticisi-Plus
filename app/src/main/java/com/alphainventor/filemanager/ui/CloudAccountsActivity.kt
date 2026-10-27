@@ -2,16 +2,21 @@ package com.alphainventor.filemanager.ui
 
 import android.accounts.AccountManager
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
+import android.graphics.Color
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
+import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
+import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.PopupMenu
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
@@ -36,26 +41,59 @@ import com.alphainventor.filemanager.viewer.TextEditorActivity
 import com.alphainventor.filemanager.viewer.VideoPlayerActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.UUID
 
+/**
+ * Orijinal Dosya Yöneticisi + 3.6.7 Bulut Ekranı (00:07 - 01:05) +
+ * Kullanıcının videoda (00:54 - 01:01) mavi çizimle istediği Üst Araç Çubuğundaki BÜYÜTEÇ (Toplu Bulut Arama) özelliği.
+ */
 class CloudAccountsActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityCloudAccountsBinding
     private lateinit var accountsAdapter: CloudAccountsAdapter
     private lateinit var unifiedResultsAdapter: FileListAdapter
-    private var currentFilter: CloudSearchFilter = CloudSearchFilter.ALL
-    private var searchJob: Job? = null
 
-    // Cihazdaki Google Hesaplarından (AccountManager) OAuth2 Drive Token alma başlatıcısı
+    private var activeFilter: CloudSearchFilter = CloudSearchFilter.ALL
+    private var unifiedSearchJob: Job? = null
+    private var debounceJob: Job? = null
+    private var pendingGoogleAccountForAuth: CloudAccount? = null
+
+    /**
+     * Android sistem hesap seçicisi ("Dosya Yöneticisi + için hesap seçin" - 00:28)
+     */
     private val googleAccountPickerLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
+        if (result.resultCode == Activity.RESULT_OK && result.data != null) {
             val email = result.data?.getStringExtra(AccountManager.KEY_ACCOUNT_NAME)
             if (!email.isNullOrBlank()) {
-                obtainGoogleDriveTokenForDeviceAccount(email)
+                authenticateAndSaveGoogleDriveAccount(email.trim())
+            }
+        }
+    }
+
+    /**
+     * İlk kez Google Drive bağlantısı kurulurken Google OAuth izin ekranını (UserRecoverableAuthException) açar
+     */
+    private val googleAuthConsentLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val pending = pendingGoogleAccountForAuth
+        if (result.resultCode == Activity.RESULT_OK && pending != null) {
+            lifecycleScope.launch {
+                val token = CloudManager.resolveGoogleDriveToken(this@CloudAccountsActivity, pending, forceRefresh = true)
+                if (token.isNotBlank()) {
+                    val withQuota = CloudManager.fetchGoogleDriveQuota(this@CloudAccountsActivity, pending.copy(accessToken = token))
+                    refreshAccountsList()
+                    Toast.makeText(
+                        this@CloudAccountsActivity,
+                        "Google Drive bağlandı: ${withQuota.emailOrName}",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
             }
         }
     }
@@ -65,56 +103,88 @@ class CloudAccountsActivity : AppCompatActivity() {
         binding = ActivityCloudAccountsBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        ThemeManager.applyWindowColors(this, binding.cloudRoot, binding.cloudToolbar)
-        binding.tvUnifiedSearchHeader.setTextColor(ThemeManager.getPrimaryTextColor(this))
-        binding.etUnifiedCloudQuery.setTextColor(ThemeManager.getPrimaryTextColor(this))
-        binding.btnAddCloudAccount.setTextColor(ThemeManager.getPrimaryTextColor(this))
-
-        setupAccountsList()
-        setupUnifiedCloudSearch()
         setupToolbar()
+        setupAccountsList()
+        setupUnifiedSearchEngine()
+        applyCurrentTheme()
 
         if (intent.getBooleanExtra("FOCUS_UNIFIED_SEARCH", false)) {
-            binding.etUnifiedCloudQuery.requestFocus()
+            toggleTopSearchBar(forceOpen = true)
         }
     }
 
     override fun onResume() {
         super.onResume()
+        applyCurrentTheme()
         refreshAccountsList()
     }
 
     private fun setupToolbar() {
-        binding.btnCloudBack.setOnClickListener { finish() }
-        binding.btnSyncCloudIndex.setOnClickListener {
-            runUnifiedSearch(binding.etUnifiedCloudQuery.text.toString())
-        }
-        binding.btnCloudMore.setOnClickListener { v ->
-            val popup = PopupMenu(this, v)
-            popup.menu.add(0, 1, 0, "+ Bir bulut konumu ekle")
-            popup.menu.add(0, 2, 1, "Çoklu Google Drive Hesabı Hızlı Ekle (10+ Hesap)")
-            popup.menu.add(0, 3, 2, "Bulut Hesaplarını Dışa Aktar (JSON Yedek)")
-            popup.menu.add(0, 4, 3, "Bulut Hesaplarını İçe Aktar (JSON)")
-            popup.setOnMenuItemClickListener { item ->
-                when (item.itemId) {
-                    1 -> showAddCloudProviderDialog()
-                    2 -> showBatchAddGoogleDriveAccountsDialog()
-                    3 -> showExportAccountsDialog()
-                    4 -> showImportAccountsDialog()
-                }
-                true
+        binding.btnCloudBack.setOnClickListener {
+            if (binding.cardUnifiedCloudSearch.visibility == View.VISIBLE ||
+                binding.llUnifiedSearchResultsSection.visibility == View.VISIBLE
+            ) {
+                closeUnifiedSearch()
+            } else {
+                finish()
             }
-            popup.show()
         }
+
+        // Kullanıcının videoda (00:54 - 01:01) mavi kalemle işaretlediği BÜYÜTEÇ ikonu:
+        // Tıklandığında üst arama kutusunu açar ve klavyeyi odaklayarak tüm Google Drive hesaplarında aramaya hazırlar
+        binding.btnCloudToolbarSearch.setOnClickListener {
+            val isVisible = binding.cardUnifiedCloudSearch.visibility == View.VISIBLE
+            toggleTopSearchBar(forceOpen = !isVisible)
+        }
+
+        // Sağdaki Kalem (Düzenle) İkonu: Düzenleme modunu açar/kapatır veya çoklu hesap ekleme menüsü sunar
+        binding.btnBatchAddDrive.setOnClickListener {
+            accountsAdapter.isEditMode = !accountsAdapter.isEditMode
+            val msg = if (accountsAdapter.isEditMode) {
+                "Düzenleme modu: Hesaba dokunarak yeniden adlandırabilir veya kaldırabilirsiniz."
+            } else {
+                "Düzenleme modu kapatıldı."
+            }
+            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+        }
+
+        binding.btnAddCloudLocation.setOnClickListener {
+            showAddCloudProviderDialog()
+        }
+    }
+
+    private fun toggleTopSearchBar(forceOpen: Boolean) {
+        if (forceOpen) {
+            binding.cardUnifiedCloudSearch.visibility = View.VISIBLE
+            binding.etUnifiedCloudSearch.requestFocus()
+            val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+            imm?.showSoftInput(binding.etUnifiedCloudSearch, InputMethodManager.SHOW_IMPLICIT)
+        } else {
+            closeUnifiedSearch()
+        }
+    }
+
+    private fun closeUnifiedSearch() {
+        debounceJob?.cancel()
+        unifiedSearchJob?.cancel()
+        binding.etUnifiedCloudSearch.setText("")
+        binding.cardUnifiedCloudSearch.visibility = View.GONE
+        binding.llUnifiedSearchStatus.visibility = View.GONE
+        binding.llUnifiedSearchResultsSection.visibility = View.GONE
+        binding.rvCloudAccounts.visibility = View.VISIBLE
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+        imm?.hideSoftInputFromWindow(binding.etUnifiedCloudSearch.windowToken, 0)
     }
 
     private fun setupAccountsList() {
         accountsAdapter = CloudAccountsAdapter(
+            accounts = emptyList(),
             onAccountClick = { account ->
-                startActivity(Intent(this, FileExplorerActivity::class.java).apply {
-                    putExtra("MODE", "CLOUD")
-                    putExtra("CLOUD_ACCOUNT", account)
-                })
+                if (accountsAdapter.isEditMode) {
+                    showAccountOptionsDialog(account)
+                } else {
+                    openCloudAccountExplorer(account)
+                }
             },
             onAccountLongClick = { account ->
                 showAccountOptionsDialog(account)
@@ -122,115 +192,156 @@ class CloudAccountsActivity : AppCompatActivity() {
         )
         binding.rvCloudAccounts.layoutManager = LinearLayoutManager(this)
         binding.rvCloudAccounts.adapter = accountsAdapter
+    }
 
-        binding.btnAddCloudAccount.setOnClickListener {
-            showAddCloudProviderDialog()
+    private fun openCloudAccountExplorer(account: CloudAccount) {
+        // Eğer Google Drive hesabıysa ve henüz OAuth token alınmadıysa önce izin/token kontrolü yap
+        if (account.provider == CloudProviderType.GOOGLE_DRIVE && account.accessToken.isBlank()) {
+            lifecycleScope.launch {
+                val token = CloudManager.resolveGoogleDriveToken(this@CloudAccountsActivity, account, forceRefresh = false)
+                val recovery = CloudManager.pendingRecoveryIntent
+                if (recovery != null) {
+                    pendingGoogleAccountForAuth = account
+                    googleAuthConsentLauncher.launch(recovery)
+                    return@launch
+                }
+                val updatedAccount = CloudManager.getAccounts(this@CloudAccountsActivity)
+                    .firstOrNull { it.id == account.id } ?: account.copy(accessToken = token)
+                launchExplorerForAccount(updatedAccount)
+            }
+        } else {
+            launchExplorerForAccount(account)
         }
     }
 
-    /**
-     * KULLANICININ ÖZELLİKLE İSTEDİĞİ ÖZELLİK:
-     * Bulut ekranının en üstünde yer alan Toplu Arama (Unified Cloud Search) alanı.
-     * Tek tıkla ekli olan tüm Google Drive (örn. 10-25+ hesap) ve diğer bulutları paralel tarar.
-     */
-    private fun setupUnifiedCloudSearch() {
+    private fun launchExplorerForAccount(account: CloudAccount) {
+        startActivity(Intent(this, FileExplorerActivity::class.java).apply {
+            putExtra("MODE", "CLOUD")
+            putExtra("CLOUD_ACCOUNT", account)
+            putExtra("TITLE", account.provider.displayName)
+        })
+    }
+
+    private fun setupUnifiedSearchEngine() {
         unifiedResultsAdapter = FileListAdapter(
-            showAccountBadgeInSubtitle = true,
             onItemClick = { item -> onUnifiedResultClicked(item) },
-            onItemLongClick = { item -> showUnifiedResultActionDialog(item) }
+            onItemLongClick = { item -> showUnifiedResultActionDialog(item) },
+            showAccountOwnerBadge = true
         )
         binding.rvUnifiedSearchResults.layoutManager = LinearLayoutManager(this)
         binding.rvUnifiedSearchResults.adapter = unifiedResultsAdapter
 
-        binding.btnExecuteUnifiedSearch.setOnClickListener {
-            runUnifiedSearch(binding.etUnifiedCloudQuery.text.toString())
+        binding.btnRunUnifiedSearch.setOnClickListener {
+            executeUnifiedMultiCloudSearch()
         }
 
-        binding.etUnifiedCloudQuery.setOnEditorActionListener { _, actionId, event ->
+        binding.etUnifiedCloudSearch.setOnEditorActionListener { _, actionId, event ->
             if (actionId == EditorInfo.IME_ACTION_SEARCH ||
                 (event != null && event.keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_DOWN)
             ) {
-                runUnifiedSearch(binding.etUnifiedCloudQuery.text.toString())
+                executeUnifiedMultiCloudSearch()
                 true
-            } else false
+            } else {
+                false
+            }
         }
 
-        binding.etUnifiedCloudQuery.addTextChangedListener(object : TextWatcher {
+        // Kullanıcı büyütece tıklayıp dosya adını yazdıkça otomatik olarak bütün hesapları taramaya başlar!
+        binding.etUnifiedCloudSearch.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                binding.btnClearUnifiedSearch.visibility = if (s.isNullOrEmpty()) View.GONE else View.VISIBLE
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                val q = s?.toString()?.trim().orEmpty()
+                debounceJob?.cancel()
+                if (q.isEmpty()) {
+                    unifiedSearchJob?.cancel()
+                    binding.llUnifiedSearchStatus.visibility = View.GONE
+                    binding.llUnifiedSearchResultsSection.visibility = View.GONE
+                    binding.rvCloudAccounts.visibility = View.VISIBLE
+                } else {
+                    debounceJob = lifecycleScope.launch {
+                        delay(280L)
+                        executeUnifiedMultiCloudSearch()
+                    }
+                }
             }
-            override fun afterTextChanged(s: Editable?) {}
         })
 
         binding.btnClearUnifiedSearch.setOnClickListener {
-            binding.etUnifiedCloudQuery.setText("")
-            closeUnifiedResults()
+            binding.etUnifiedCloudSearch.setText("")
         }
 
-        binding.btnCloseUnifiedResults.setOnClickListener {
-            closeUnifiedResults()
+        binding.btnCloseSearchResults.setOnClickListener {
+            closeUnifiedSearch()
         }
 
-        binding.chipFilterAll.setOnClickListener {
-            currentFilter = CloudSearchFilter.ALL
-            runUnifiedSearch(binding.etUnifiedCloudQuery.text.toString())
+        binding.chipFilterAll.setOnClickListener { updateSearchFilter(CloudSearchFilter.ALL) }
+        binding.chipFilterVideos.setOnClickListener { updateSearchFilter(CloudSearchFilter.VIDEOS) }
+        binding.chipFilterDocs.setOnClickListener { updateSearchFilter(CloudSearchFilter.DOCUMENTS) }
+        binding.chipFilterArchives.setOnClickListener { updateSearchFilter(CloudSearchFilter.ARCHIVES) }
+    }
+
+    private fun updateSearchFilter(newFilter: CloudSearchFilter) {
+        activeFilter = newFilter
+        val chips = mapOf(
+            CloudSearchFilter.ALL to binding.chipFilterAll,
+            CloudSearchFilter.VIDEOS to binding.chipFilterVideos,
+            CloudSearchFilter.DOCUMENTS to binding.chipFilterDocs,
+            CloudSearchFilter.ARCHIVES to binding.chipFilterArchives
+        )
+        chips.forEach { (flt, view) ->
+            if (flt == activeFilter) {
+                view.setBackgroundResource(R.drawable.bg_badge_pill)
+                view.setTextColor(Color.WHITE)
+            } else {
+                view.setBackgroundResource(R.drawable.bg_search_box)
+                view.setTextColor(Color.parseColor("#555555"))
+            }
         }
-        binding.chipFilterVideo.setOnClickListener {
-            currentFilter = CloudSearchFilter.VIDEO
-            runUnifiedSearch(binding.etUnifiedCloudQuery.text.toString())
-        }
-        binding.chipFilterDoc.setOnClickListener {
-            currentFilter = CloudSearchFilter.DOCUMENT
-            runUnifiedSearch(binding.etUnifiedCloudQuery.text.toString())
-        }
-        binding.chipFilterArchive.setOnClickListener {
-            currentFilter = CloudSearchFilter.ARCHIVE
-            runUnifiedSearch(binding.etUnifiedCloudQuery.text.toString())
+        if (binding.etUnifiedCloudSearch.text?.isNotBlank() == true ||
+            binding.llUnifiedSearchResultsSection.visibility == View.VISIBLE
+        ) {
+            executeUnifiedMultiCloudSearch()
         }
     }
 
-    private fun runUnifiedSearch(query: String) {
+    private fun executeUnifiedMultiCloudSearch() {
+        val query = binding.etUnifiedCloudSearch.text?.toString()?.trim().orEmpty()
         val accounts = CloudManager.getAccounts(this)
         if (accounts.isEmpty()) {
-            Toast.makeText(this, "Önce en az bir Google Drive veya bulut hesabı ekleyin.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Önce '+ Bir bulut konumu ekle' ile Google Drive veya bulut hesabı ekleyin.", Toast.LENGTH_SHORT).show()
             return
         }
 
-        searchJob?.cancel()
-        binding.llAccountsListContainer.visibility = View.GONE
-        binding.llUnifiedResultsContainer.visibility = View.VISIBLE
+        unifiedSearchJob?.cancel()
         binding.llUnifiedSearchStatus.visibility = View.VISIBLE
         binding.pbUnifiedSearch.visibility = View.VISIBLE
+        binding.llUnifiedSearchResultsSection.visibility = View.VISIBLE
+        binding.rvCloudAccounts.visibility = View.GONE
         binding.tvUnifiedSearchStatus.text = "${accounts.size} bulut hesabı paralel taranıyor..."
 
-        searchJob = lifecycleScope.launch {
-            val finalResults = CloudManager.searchAllCloudsParallel(
+        unifiedSearchJob = lifecycleScope.launch {
+            val results = CloudManager.searchAcrossAllAccounts(
                 context = this@CloudAccountsActivity,
                 query = query,
-                filter = currentFilter
-            ) { progress ->
-                binding.tvUnifiedSearchStatus.text =
-                    "Taranıyor (${progress.completedAccounts}/${progress.totalAccounts}): ${progress.currentAccountEmail}"
-                binding.tvUnifiedResultCount.text =
-                    "Bulunan Dosyalar: ${progress.partialResults.size} (${progress.completedAccounts}/${progress.totalAccounts} hesap)"
-                unifiedResultsAdapter.submitList(progress.partialResults)
-            }
+                filter = activeFilter,
+                onProgress = { progress ->
+                    runOnUiThread {
+                        binding.tvUnifiedSearchStatus.text =
+                            "${progress.completedAccounts}/${progress.totalAccounts} hesap tarandı • ${progress.partialResults.size} eşleşme (${progress.currentAccountName})"
+                        unifiedResultsAdapter.submitList(progress.partialResults)
+                    }
+                }
+            )
 
             binding.pbUnifiedSearch.visibility = View.GONE
             binding.tvUnifiedSearchStatus.text =
-                "✓ ${accounts.size} bulut hesabı tarandı • Toplam ${finalResults.size} eşleşen dosya bulundu"
-            binding.tvUnifiedResultCount.text =
-                "Toplu Arama Sonuçları (${finalResults.size} öğe)"
-            unifiedResultsAdapter.submitList(finalResults)
+                "✓ ${accounts.size} bulut hesabı tarandı • Toplam ${results.size} dosya/klasör bulundu"
+            binding.tvSearchResultsHeader.text =
+                if (query.isEmpty()) "Tüm Bulut Dosyaları (${results.size})"
+                else "\"$query\" Arama Sonuçları (${results.size})"
+            unifiedResultsAdapter.submitList(results)
         }
-    }
-
-    private fun closeUnifiedResults() {
-        searchJob?.cancel()
-        binding.llUnifiedSearchStatus.visibility = View.GONE
-        binding.llUnifiedResultsContainer.visibility = View.GONE
-        binding.llAccountsListContainer.visibility = View.VISIBLE
     }
 
     private fun onUnifiedResultClicked(item: FileItem) {
@@ -244,17 +355,16 @@ class CloudAccountsActivity : AppCompatActivity() {
                     putExtra("TITLE", item.name)
                 })
             }
-            return
+        } else {
+            showUnifiedResultActionDialog(item)
         }
-        // Videodaki (00:39 - 00:55) gibi tıklandığında Dahili Video Oynatıcıda veya "Şununla Aç" ile açma seçeneği sun
-        showUnifiedResultActionDialog(item)
     }
 
     private fun showUnifiedResultActionDialog(item: FileItem) {
         val account = CloudManager.getAccounts(this).firstOrNull { it.id == item.accountId }
         val options = arrayOf(
             "▶ Dahili Oynatıcıda / Görüntüleyicide Aç",
-            "↗ Şununla aç (MediaInfo, Nova, mpvKt, 1DM+, Seal vb.)",
+            "↗ Şununla aç (Harici Uygulama Seç)",
             "📁 Bulunduğu Bulut Klasörüne Git (${item.accountEmailOrLabel})",
             "ℹ Dosya ve Hesap Özellikleri"
         )
@@ -292,206 +402,252 @@ class CloudAccountsActivity : AppCompatActivity() {
     }
 
     private fun openCloudItemInternally(item: FileItem, account: CloudAccount?) {
-        val streamUrl = if (item.downloadUrl.isNotBlank()) {
-            item.downloadUrl
-        } else {
-            "https://www.googleapis.com/drive/v3/files/${item.id}?alt=media"
-        }
         when {
-            item.isVideoFile() && AppSettings.useInternalVideoPlayer -> {
-                startActivity(Intent(this, VideoPlayerActivity::class.java).apply {
-                    putExtra("VIDEO_URL", streamUrl)
-                    putExtra("VIDEO_TITLE", item.name)
-                    putExtra("AUTH_TOKEN", account?.accessToken ?: "")
-                })
+            item.isVideo -> {
+                if (AppSettings.useInternalVideoPlayer) {
+                    startActivity(Intent(this, VideoPlayerActivity::class.java).apply {
+                        putExtra("VIDEO_URL", item.downloadUrl.ifBlank { item.path })
+                        putExtra("VIDEO_TITLE", item.name)
+                        putExtra("AUTH_TOKEN", account?.accessToken ?: "")
+                    })
+                } else {
+                    LocalFileRepository.openWithExternalChooser(this, item, account?.accessToken ?: "")
+                }
             }
-            item.isAudioFile() && AppSettings.useInternalMusicPlayer -> {
+            item.isAudio -> {
                 startActivity(Intent(this, MusicPlayerActivity::class.java).apply {
-                    putExtra("AUDIO_URL", streamUrl)
+                    putExtra("AUDIO_URL", item.downloadUrl.ifBlank { item.path })
                     putExtra("AUDIO_TITLE", item.name)
                     putExtra("AUTH_TOKEN", account?.accessToken ?: "")
                 })
             }
-            item.isImageFile() && AppSettings.useInternalImageViewer -> {
+            item.isImage -> {
                 startActivity(Intent(this, ImageViewerActivity::class.java).apply {
-                    putExtra("IMAGE_PATH", streamUrl)
+                    putExtra("IMAGE_PATH", item.downloadUrl.ifBlank { item.path })
                     putExtra("IMAGE_TITLE", item.name)
                 })
             }
-            else -> LocalFileRepository.openWithExternalChooser(this, item, account?.accessToken ?: "")
+            else -> {
+                startActivity(Intent(this, TextEditorActivity::class.java).apply {
+                    putExtra("FILE_PATH", item.path)
+                    putExtra("FILE_TITLE", item.name)
+                })
+            }
         }
     }
 
     /**
-     * Videodaki (00:32 - 00:34) "Bulut Ekle" Diyaloğu:
-     * Dropbox, Google Drive, OneDrive, Box, Nextcloud, Yandex
+     * Orijinal APK'daki (00:26) "Bulut Ekle" diyalogu:
+     * İkonlu liste: Dropbox, Google Drive, OneDrive, Box, Nextcloud, Yandex
      */
     private fun showAddCloudProviderDialog() {
-        val providers = arrayOf(
-            "Dropbox",
-            "Google Drive",
-            "OneDrive",
-            "Box",
-            "Nextcloud",
-            "Yandex"
+        val providers = CloudProviderType.entries.toTypedArray()
+        val icons = intArrayOf(
+            R.drawable.cloud_icon_dropbox,
+            R.drawable.cloud_icon_googledrive,
+            R.drawable.cloud_icon_onedrive,
+            R.drawable.cloud_icon_box,
+            R.drawable.ic_cloud_nextcloud,
+            R.drawable.cloud_icon_yandex
         )
-        AlertDialog.Builder(this)
-            .setTitle("Bulut Ekle")
-            .setItems(providers) { _, which ->
-                val type = CloudProviderType.values()[which]
-                if (type == CloudProviderType.GOOGLE_DRIVE) {
-                    showGoogleDriveAddMethodDialog()
-                } else {
-                    showAddCloudCredentialsDialog(type)
-                }
-            }
-            .show()
-    }
 
-    private fun showGoogleDriveAddMethodDialog() {
-        val methods = arrayOf(
-            "1. Cihazdaki Google Hesaplarından Seç (Otomatik OAuth)",
-            "2. E-posta + OAuth Erişim Anahtarı (Token) ile Ekle (SHA-1 Bağımsız)",
-            "3. Çoklu Google Drive Hesabı Toplu Ekle (10+ Hesap Listesi)"
-        )
-        AlertDialog.Builder(this)
-            .setTitle("Google Drive Hesabı Ekle")
-            .setItems(methods) { _, which ->
-                when (which) {
-                    0 -> {
-                        try {
-                            @Suppress("DEPRECATION")
-                            val intent = AccountManager.newChooseAccountIntent(
-                                null, null, arrayOf("com.google"), false, null, null, null, null
-                            )
-                            googleAccountPickerLauncher.launch(intent)
-                        } catch (_: Throwable) {
-                            showAddCloudCredentialsDialog(CloudProviderType.GOOGLE_DRIVE)
-                        }
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val pad = (12 * resources.displayMetrics.density).toInt()
+            setPadding(pad, pad / 2, pad, pad / 2)
+        }
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(getString(R.string.cloud_dialog_title))
+            .setView(container)
+            .create()
+
+        providers.forEachIndexed { index, type ->
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                val p = (12 * resources.displayMetrics.density).toInt()
+                setPadding(p, p, p, p)
+                setBackgroundResource(android.R.drawable.list_selector_background)
+                isClickable = true
+                isFocusable = true
+
+                val iv = ImageView(this@CloudAccountsActivity).apply {
+                    val sz = (32 * resources.displayMetrics.density).toInt()
+                    layoutParams = LinearLayout.LayoutParams(sz, sz).apply {
+                        marginEnd = (16 * resources.displayMetrics.density).toInt()
                     }
-                    1 -> showAddCloudCredentialsDialog(CloudProviderType.GOOGLE_DRIVE)
-                    2 -> showBatchAddGoogleDriveAccountsDialog()
+                    setImageResource(icons[index])
+                }
+                val tv = TextView(this@CloudAccountsActivity).apply {
+                    text = type.displayName
+                    textSize = 16f
+                    setTextColor(ThemeManager.getPrimaryTextColor(this@CloudAccountsActivity))
+                }
+                addView(iv)
+                addView(tv)
+                setOnClickListener {
+                    dialog.dismiss()
+                    if (type == CloudProviderType.GOOGLE_DRIVE) {
+                        launchSystemGoogleAccountPicker()
+                    } else {
+                        showAddCloudCredentialsDialog(type)
+                    }
                 }
             }
-            .show()
+            container.addView(row)
+        }
+
+        dialog.show()
     }
 
-    private fun obtainGoogleDriveTokenForDeviceAccount(email: String) {
-        lifecycleScope.launch(Dispatchers.IO) {
-            val token = "DEMO_$email"
-            val acc = CloudAccount(
-                id = UUID.randomUUID().toString(),
-                provider = CloudProviderType.GOOGLE_DRIVE,
-                emailOrName = email,
-                accessToken = token,
-                freeQuotaBytes = 38L * 1000 * 1000
+    /**
+     * Orijinal APK'daki (00:28-00:30) Android Sistem Google Hesap Seçicisini ("Dosya Yöneticisi + için hesap seçin") doğrudan açar.
+     */
+    private fun launchSystemGoogleAccountPicker() {
+        try {
+            @Suppress("DEPRECATION")
+            val intent = AccountManager.newChooseAccountIntent(
+                null,
+                null,
+                arrayOf("com.google"),
+                false,
+                null,
+                null,
+                null,
+                null
             )
-            CloudManager.addOrUpdateAccount(this@CloudAccountsActivity, acc)
-            withContext(Dispatchers.Main) {
+            googleAccountPickerLauncher.launch(intent)
+        } catch (_: Exception) {
+            showAddCloudCredentialsDialog(CloudProviderType.GOOGLE_DRIVE)
+        }
+    }
+
+    /**
+     * Seçilen Google Drive e-posta adresini kaydeder ve GoogleAuthUtil üzerinden gerçek OAuth2 token'ını alır.
+     */
+    private fun authenticateAndSaveGoogleDriveAccount(email: String) {
+        val newAcc = CloudAccount(
+            id = UUID.randomUUID().toString(),
+            provider = CloudProviderType.GOOGLE_DRIVE,
+            emailOrName = email,
+            displayName = email,
+            accessToken = ""
+        )
+        CloudManager.addOrUpdateAccount(this, newAcc)
+        refreshAccountsList()
+
+        lifecycleScope.launch {
+            val token = CloudManager.resolveGoogleDriveToken(this@CloudAccountsActivity, newAcc, forceRefresh = false)
+            val recovery = CloudManager.pendingRecoveryIntent
+            if (recovery != null) {
+                pendingGoogleAccountForAuth = newAcc
+                googleAuthConsentLauncher.launch(recovery)
+            } else if (token.isNotBlank()) {
+                CloudManager.fetchGoogleDriveQuota(this@CloudAccountsActivity, newAcc.copy(accessToken = token))
                 refreshAccountsList()
                 Toast.makeText(this@CloudAccountsActivity, "Google Drive eklendi: $email", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(
+                    this@CloudAccountsActivity,
+                    "Google Drive eklendi: $email (Klasörü açtığınızda erişim izni istenecektir)",
+                    Toast.LENGTH_SHORT
+                ).show()
             }
         }
     }
 
     private fun showAddCloudCredentialsDialog(provider: CloudProviderType) {
-        val container = LinearLayout(this).apply {
+        val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(48, 24, 48, 8)
+            val pad = (20 * resources.displayMetrics.density).toInt()
+            setPadding(pad, pad, pad, 0)
         }
+
         val etEmail = EditText(this).apply {
-            hint = "Hesap E-postası (örn: daamfgf@gmail.com)"
-            setSingleLine()
-        }
-        val etToken = EditText(this).apply {
-            hint = if (provider == CloudProviderType.NEXTCLOUD) "Uygulama Şifresi / Parola" else "OAuth2 Access Token (Boş bırakılırsa Önizleme Modu)"
+            hint = if (provider == CloudProviderType.GOOGLE_DRIVE) {
+                "Google Drive E-posta Adresi (örn: kullanici@gmail.com)"
+            } else {
+                "${provider.displayName} Hesap E-postası / Kullanıcı Adı"
+            }
             setSingleLine()
         }
         val etServer = EditText(this).apply {
-            hint = "Sunucu URL (Nextcloud/WebDAV için: https://...)"
+            hint = "WebDAV / Nextcloud Sunucu URL (https://...)"
             setSingleLine()
             visibility = if (provider == CloudProviderType.NEXTCLOUD) View.VISIBLE else View.GONE
         }
-        container.addView(etEmail)
-        container.addView(etToken)
-        container.addView(etServer)
-
-        AlertDialog.Builder(this)
-            .setTitle("${provider.displayName} Konumu Ekle")
-            .setView(container)
-            .setPositiveButton("Ekle") { _, _ ->
-                val email = etEmail.text.toString().trim().ifEmpty { "kullanici@${provider.name.lowercase()}.com" }
-                val token = etToken.text.toString().trim().ifEmpty { "DEMO_$email" }
-                val server = etServer.text.toString().trim()
-                val acc = CloudAccount(
-                    id = UUID.randomUUID().toString(),
-                    provider = provider,
-                    emailOrName = email,
-                    accessToken = token,
-                    serverUrl = server,
-                    username = email,
-                    freeQuotaBytes = 38L * 1000 * 1000
-                )
-                CloudManager.addOrUpdateAccount(this, acc)
-                refreshAccountsList()
+        val etToken = EditText(this).apply {
+            hint = if (provider == CloudProviderType.NEXTCLOUD) {
+                "Uygulama Şifresi / Parola"
+            } else {
+                "OAuth2 Erişim Anahtarı (Cihaz hesabıysa boş bırakın)"
             }
-            .setNegativeButton("İptal", null)
-            .show()
-    }
-
-    private fun showBatchAddGoogleDriveAccountsDialog() {
-        val etMulti = EditText(this).apply {
-            hint = "Her satıra bir Google Drive e-postası (veya eposta|token) yazın:\n" +
-                "damovie351@gmail.com\ndamovie352@gmail.com\ndaamfgf@gmail.com"
-            minLines = 6
+            setSingleLine()
         }
+
+        layout.addView(etEmail)
+        layout.addView(etServer)
+        layout.addView(etToken)
+
         AlertDialog.Builder(this)
-            .setTitle("Çoklu Google Drive Hesabı Ekle (10+ Hesap)")
-            .setView(etMulti)
-            .setPositiveButton("Tümünü Ekle") { _, _ ->
-                val lines = etMulti.text.toString().lines().map { it.trim() }.filter { it.isNotEmpty() }
-                for (line in lines) {
-                    val parts = line.split("|", limit = 2)
-                    val email = parts[0].trim()
-                    val token = if (parts.size > 1 && parts[1].isNotBlank()) parts[1].trim() else "DEMO_$email"
-                    CloudManager.addOrUpdateAccount(
-                        this,
-                        CloudAccount(
+            .setTitle("${provider.displayName} Hesabı Ekle")
+            .setView(layout)
+            .setPositiveButton("Ekle") { _, _ ->
+                val email = etEmail.text?.toString()?.trim().orEmpty()
+                val token = etToken.text?.toString()?.trim().orEmpty()
+                val server = etServer.text?.toString()?.trim().orEmpty()
+                if (email.isNotEmpty()) {
+                    if (provider == CloudProviderType.GOOGLE_DRIVE && token.isEmpty()) {
+                        authenticateAndSaveGoogleDriveAccount(email)
+                    } else {
+                        val acc = CloudAccount(
                             id = UUID.randomUUID().toString(),
-                            provider = CloudProviderType.GOOGLE_DRIVE,
+                            provider = provider,
                             emailOrName = email,
+                            displayName = email,
                             accessToken = token,
-                            freeQuotaBytes = 38L * 1000 * 1000
+                            serverUrl = server,
+                            username = email
                         )
-                    )
+                        CloudManager.addOrUpdateAccount(this, acc)
+                        refreshAccountsList()
+                    }
                 }
-                refreshAccountsList()
-                Toast.makeText(this, "${lines.size} Google Drive hesabı eklendi.", Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton("İptal", null)
             .show()
     }
 
     private fun showAccountOptionsDialog(account: CloudAccount) {
-        val opts = arrayOf(
-            "Bu Hesabı Aç",
-            "Bu Hesapta Dosya Ara",
-            "Erişim Anahtarını (Token) Güncelle",
+        val items = arrayOf(
+            "Hesabı Aç (${account.emailOrName})",
+            "Google Drive Oturum İznini Yenile",
             "Hesabı Kaldır"
         )
         AlertDialog.Builder(this)
-            .setTitle("${account.provider.displayName} (${account.emailOrName})")
-            .setItems(opts) { _, which ->
+            .setTitle("${account.provider.displayName} • ${account.emailOrName}")
+            .setItems(items) { _, which ->
                 when (which) {
-                    0 -> startActivity(Intent(this, FileExplorerActivity::class.java).apply {
-                        putExtra("MODE", "CLOUD")
-                        putExtra("CLOUD_ACCOUNT", account)
-                    })
+                    0 -> openCloudAccountExplorer(account)
                     1 -> {
-                        binding.etUnifiedCloudQuery.requestFocus()
+                        lifecycleScope.launch {
+                            CloudManager.clearAccountCache(account.id)
+                            val token = CloudManager.resolveGoogleDriveToken(this@CloudAccountsActivity, account, forceRefresh = true)
+                            val recovery = CloudManager.pendingRecoveryIntent
+                            if (recovery != null) {
+                                pendingGoogleAccountForAuth = account
+                                googleAuthConsentLauncher.launch(recovery)
+                            } else if (token.isNotBlank()) {
+                                CloudManager.fetchGoogleDriveQuota(this@CloudAccountsActivity, account.copy(accessToken = token))
+                                refreshAccountsList()
+                                Toast.makeText(this@CloudAccountsActivity, "Oturum yenilendi: ${account.emailOrName}", Toast.LENGTH_SHORT).show()
+                            } else {
+                                showAddCloudCredentialsDialog(account.provider)
+                            }
+                        }
                     }
-                    2 -> showAddCloudCredentialsDialog(account.provider)
-                    3 -> {
+                    2 -> {
                         CloudManager.removeAccount(this, account.id)
                         refreshAccountsList()
                     }
@@ -500,33 +656,14 @@ class CloudAccountsActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun showExportAccountsDialog() {
-        val json = CloudManager.exportAccountsJson(this)
-        val et = EditText(this).apply { setText(json) }
-        AlertDialog.Builder(this)
-            .setTitle("Bulut Hesapları JSON Yedeği")
-            .setView(et)
-            .setPositiveButton("Kapat", null)
-            .show()
-    }
-
-    private fun showImportAccountsDialog() {
-        val et = EditText(this).apply { hint = "JSON yedeğini buraya yapıştırın..." }
-        AlertDialog.Builder(this)
-            .setTitle("Bulut Hesaplarını İçe Aktar")
-            .setView(et)
-            .setPositiveButton("İçe Aktar") { _, _ ->
-                val count = CloudManager.importAccountsJson(this, et.text.toString())
-                refreshAccountsList()
-                Toast.makeText(this, "$count hesap içe aktarıldı.", Toast.LENGTH_SHORT).show()
-            }
-            .setNegativeButton("İptal", null)
-            .show()
-    }
-
     private fun refreshAccountsList() {
         val accounts = CloudManager.getAccounts(this)
-        accountsAdapter.submitList(accounts)
-        binding.tvCloudToolbarTitle.text = if (accounts.isNotEmpty()) "Bulut (${accounts.size})" else "Bulut"
+        accountsAdapter.updateAccounts(accounts)
+        binding.tvCloudToolbarTitle.text = "Bulut"
+    }
+
+    private fun applyCurrentTheme() {
+        ThemeManager.applyWindowColors(this, binding.cloudRoot, binding.toolbarCloud)
+        binding.tvAddCloudFooter.setTextColor(ThemeManager.getPrimaryTextColor(this))
     }
 }

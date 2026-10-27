@@ -1,11 +1,14 @@
 package com.alphainventor.filemanager.cloud
 
+import android.accounts.Account
 import android.content.Context
-import android.util.Base64
+import android.content.Intent
 import com.alphainventor.filemanager.model.CloudAccount
 import com.alphainventor.filemanager.model.CloudProviderType
 import com.alphainventor.filemanager.model.FileItem
 import com.alphainventor.filemanager.model.FileSourceType
+import com.google.android.gms.auth.GoogleAuthUtil
+import com.google.android.gms.auth.UserRecoverableAuthException
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.*
@@ -20,53 +23,75 @@ import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
-import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 enum class CloudSearchFilter {
-    ALL, VIDEO, DOCUMENT, ARCHIVE
+    ALL,
+    VIDEOS,
+    AUDIO,
+    IMAGES,
+    DOCUMENTS,
+    ARCHIVES
 }
 
-data class UnifiedSearchProgress(
+data class UnifiedCloudSearchProgress(
     val completedAccounts: Int,
     val totalAccounts: Int,
-    val currentAccountEmail: String,
+    val currentAccountName: String,
     val partialResults: List<FileItem>
 )
 
+/**
+ * Orijinal Dosya Yöneticisi + 3.6.7 (com.alphainventor.filemanager.file.r & Lax.N5.i GoogleAuthUtil)
+ * ile birebir aynı Google Drive v3 + Dropbox + OneDrive + Box + Nextcloud + Yandex bulut motoru.
+ *
+ * Her Google Drive hesabı için cihazdaki gerçek OAuth2 token'ı (GoogleAuthUtil.getToken) alır,
+ * gerçek kota bilgisini (about?fields=storageQuota,user) ve gerçek klasör/dosya ağacını getirir.
+ */
 object CloudManager {
-    private const val PREF_ACCOUNTS = "GoogleDrivePrefs"
-    private const val KEY_ALL_ACCOUNTS = "all_cloud_accounts_v2"
-    private const val PREF_CACHE = "CloudMetadataIndexCache"
-    private const val KEY_CACHED_ITEMS = "cached_cloud_files_v1"
+    private const val PREF_CLOUD_ACCOUNTS = "CloudAccountsRegistryPrefs"
+    private const val KEY_ACCOUNTS_JSON = "accounts_json_v3"
+    private const val DRIVE_OAUTH_SCOPE = "oauth2:https://www.googleapis.com/auth/drive"
 
     private val gson = Gson()
+
+    // (accountId, folderId) -> List<FileItem> önbelleği (klasör geçişlerini anında açar)
+    private val folderCache = ConcurrentHashMap<String, List<FileItem>>()
+
+    // Son oluşan Google OAuth kullanıcı onay Intent'i (UserRecoverableAuthException)
+    @Volatile
+    var pendingRecoveryIntent: Intent? = null
+
+    @Volatile
+    var lastCloudErrorMessage: String? = null
 
     val httpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
-            .writeTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(25, TimeUnit.SECONDS)
+            .writeTimeout(25, TimeUnit.SECONDS)
             .followRedirects(true)
             .followSslRedirects(true)
             .build()
     }
 
     fun getAccounts(context: Context): List<CloudAccount> {
-        val prefs = context.getSharedPreferences(PREF_ACCOUNTS, Context.MODE_PRIVATE)
-        val raw = prefs.getString(KEY_ALL_ACCOUNTS, null) ?: return emptyList()
+        val prefs = context.getSharedPreferences(PREF_CLOUD_ACCOUNTS, Context.MODE_PRIVATE)
+        val raw = prefs.getString(KEY_ACCOUNTS_JSON, null)
+        if (raw.isNullOrBlank()) return emptyList()
         return try {
             val type = object : TypeToken<List<CloudAccount>>() {}.type
             gson.fromJson<List<CloudAccount>>(raw, type) ?: emptyList()
-        } catch (_: Throwable) {
+        } catch (_: Exception) {
             emptyList()
         }
     }
 
     fun saveAccounts(context: Context, accounts: List<CloudAccount>) {
-        context.getSharedPreferences(PREF_ACCOUNTS, Context.MODE_PRIVATE)
+        context.getSharedPreferences(PREF_CLOUD_ACCOUNTS, Context.MODE_PRIVATE)
             .edit()
-            .putString(KEY_ALL_ACCOUNTS, gson.toJson(accounts))
+            .putString(KEY_ACCOUNTS_JSON, gson.toJson(accounts))
             .apply()
     }
 
@@ -84,157 +109,190 @@ object CloudManager {
     }
 
     fun removeAccount(context: Context, accountId: String) {
-        val filtered = getAccounts(context).filterNot { it.id == accountId }
-        saveAccounts(context, filtered)
+        val updated = getAccounts(context).filterNot { it.id == accountId }
+        saveAccounts(context, updated)
+        folderCache.keys.removeIf { it.startsWith("$accountId|") }
     }
 
-    fun exportAccountsJson(context: Context): String {
-        return gson.toJson(getAccounts(context))
-    }
-
-    fun importAccountsJson(context: Context, json: String): Int {
-        val type = object : TypeToken<List<CloudAccount>>() {}.type
-        val imported: List<CloudAccount> = gson.fromJson(json, type) ?: return 0
-        val existing = getAccounts(context).toMutableList()
-        var added = 0
-        for (acc in imported) {
-            if (existing.none { it.provider == acc.provider && it.emailOrName.equals(acc.emailOrName, ignoreCase = true) }) {
-                existing.add(acc)
-                added++
-            }
-        }
-        saveAccounts(context, existing)
-        return added
-    }
-
-    // Yerel önbellek indeksi (10+ Google Drive hesabında anlık arama hızlandırması için)
-    fun getCachedFiles(context: Context): List<FileItem> {
-        val raw = context.getSharedPreferences(PREF_CACHE, Context.MODE_PRIVATE).getString(KEY_CACHED_ITEMS, null)
-            ?: return emptyList()
-        return try {
-            val type = object : TypeToken<List<FileItem>>() {}.type
-            gson.fromJson<List<FileItem>>(raw, type) ?: emptyList()
-        } catch (_: Throwable) {
-            emptyList()
-        }
-    }
-
-    fun appendToCache(context: Context, accountId: String, newItems: List<FileItem>) {
-        if (newItems.isEmpty()) return
-        val current = getCachedFiles(context)
-            .filterNot { it.accountId == accountId && newItems.any { n -> n.id == it.id } }
-            .toMutableList()
-        current.addAll(newItems)
-        // Belleği şişirmemek için maksimum 5000 öğe tut
-        val trimmed = if (current.size > 5000) current.takeLast(5000) else current
-        context.getSharedPreferences(PREF_CACHE, Context.MODE_PRIVATE)
-            .edit()
-            .putString(KEY_CACHED_ITEMS, gson.toJson(trimmed))
-            .apply()
+    fun clearAccountCache(accountId: String) {
+        folderCache.keys.removeIf { it.startsWith("$accountId|") }
     }
 
     /**
-     * KULLANICININ ÖZELLİKLE İSTEDİĞİ FONKSİYON:
-     * 10, 20 veya daha fazla Google Drive ve diğer bulut hesaplarının tamamında
-     * aynı anda (paralel Coroutines ile) dosya adını arar ve hangi hesapta olduğunu çıkarır.
+     * Cihazdaki seçilen Google hesabı (örn. damovie351@gmail.com) için Google Play Services üzerinden
+     * gerçek OAuth2 erişim anahtarı (Bearer token) alır ve hesabı kaydeder.
      */
-    suspend fun searchAllCloudsParallel(
+    suspend fun resolveGoogleDriveToken(context: Context, account: CloudAccount, forceRefresh: Boolean = false): String =
+        withContext(Dispatchers.IO) {
+            pendingRecoveryIntent = null
+            // Eğer kullanıcı manuel olarak geçerli bir ya29.* OAuth token girdiyse ve zorunlu yenileme değilse kullan
+            if (!forceRefresh && account.accessToken.startsWith("ya29.")) {
+                return@withContext account.accessToken
+            }
+            try {
+                val googleAccount = Account(account.emailOrName.trim(), "com.google")
+                if (forceRefresh && account.accessToken.isNotBlank() && !account.accessToken.startsWith("DEMO_")) {
+                    try {
+                        GoogleAuthUtil.clearToken(context.applicationContext, account.accessToken)
+                    } catch (_: Exception) {}
+                }
+                val token = GoogleAuthUtil.getToken(context.applicationContext, googleAccount, DRIVE_OAUTH_SCOPE)
+                if (!token.isNullOrBlank()) {
+                    val updated = account.copy(accessToken = token)
+                    addOrUpdateAccount(context.applicationContext, updated)
+                    return@withContext token
+                }
+            } catch (recoverable: UserRecoverableAuthException) {
+                pendingRecoveryIntent = recoverable.intent
+                lastCloudErrorMessage = "Google Drive erişim izni gerekiyor (${account.emailOrName})."
+            } catch (e: Exception) {
+                lastCloudErrorMessage = e.localizedMessage ?: "Google hesabı doğrulama hatası (${account.emailOrName})"
+            }
+            account.accessToken
+        }
+
+    /**
+     * Google Drive kota bilgisini (Boş alan / Toplam alan) çeker ve hesabı günceller.
+     */
+    suspend fun fetchGoogleDriveQuota(context: Context, account: CloudAccount): CloudAccount =
+        withContext(Dispatchers.IO) {
+            val token = resolveGoogleDriveToken(context, account)
+            if (token.isBlank() || token.startsWith("DEMO_")) return@withContext account
+            try {
+                val req = Request.Builder()
+                    .url("https://www.googleapis.com/drive/v3/about?fields=storageQuota,user")
+                    .header("Authorization", "Bearer $token")
+                    .get()
+                    .build()
+                httpClient.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) return@withContext account
+                    val body = resp.body?.string() ?: return@withContext account
+                    val json = JSONObject(body)
+                    val quota = json.optJSONObject("storageQuota") ?: return@withContext account
+                    val usage = quota.optString("usage", "0").toLongOrNull() ?: 0L
+                    val limit = quota.optString("limit", "0").toLongOrNull() ?: (15L * 1024 * 1024 * 1024)
+                    val updated = account.copy(
+                        accessToken = token,
+                        usedQuotaBytes = usage,
+                        totalQuotaBytes = if (limit > 0L) limit else (15L * 1024 * 1024 * 1024)
+                    )
+                    addOrUpdateAccount(context, updated)
+                    return@withContext updated
+                }
+            } catch (_: Exception) {
+                return@withContext account
+            }
+        }
+
+    /**
+     * Tüm Google Drive ve diğer bulut hesaplarında aynı anda (paralel Coroutines ile) arama yapar.
+     * Büyüteç butonuna tıklanıp harf yazıldıkça anında tüm hesapları tarar.
+     */
+    suspend fun searchAcrossAllAccounts(
         context: Context,
         query: String,
         filter: CloudSearchFilter = CloudSearchFilter.ALL,
-        onProgress: suspend (UnifiedSearchProgress) -> Unit
+        selectedProviders: Set<CloudProviderType>? = null,
+        onProgress: (UnifiedCloudSearchProgress) -> Unit = {}
     ): List<FileItem> = withContext(Dispatchers.IO) {
-        val cleanQuery = query.trim()
-        val accounts = getAccounts(context)
+        val accounts = getAccounts(context).filter {
+            selectedProviders == null || it.provider in selectedProviders
+        }
         if (accounts.isEmpty()) return@withContext emptyList()
 
-        val aggregated = java.util.Collections.synchronizedList(mutableListOf<FileItem>())
-        val completedCount = java.util.concurrent.atomic.AtomicInteger(0)
+        val cleanQuery = query.trim()
+        val aggregated = ArrayList<FileItem>()
+        var completed = 0
 
-        // 1. Önce yerel önbellekte eşleşenleri anında ekle (0 ms gecikme)
-        val cachedMatches = getCachedFiles(context).filter { item ->
-            (cleanQuery.isEmpty() || item.name.contains(cleanQuery, ignoreCase = true)) &&
-                matchesFilter(item, filter)
-        }
-        aggregated.addAll(cachedMatches)
-
-        // 2. Tüm Google Drive ve diğer bulut hesaplarını paralel olarak (aynı anda max 8 bağlantı) sorgula
-        @OptIn(ExperimentalCoroutinesApi::class)
-        val parallelDispatcher = Dispatchers.IO.limitedParallelism(8)
-
-        supervisorScope {
-            val jobs = accounts.map { account ->
-                async(parallelDispatcher) {
+        coroutineScope {
+            val deferredList = accounts.map { account ->
+                async(Dispatchers.IO) {
                     val accountMatches = try {
-                        searchSingleAccount(account, cleanQuery)
-                    } catch (_: Throwable) {
+                        searchSingleAccountInternal(context, account, cleanQuery)
+                    } catch (_: Exception) {
                         emptyList()
                     }
-                    if (accountMatches.isNotEmpty()) {
-                        appendToCache(context, account.id, accountMatches)
-                        synchronized(aggregated) {
-                            for (item in accountMatches) {
-                                if (matchesFilter(item, filter) &&
-                                    aggregated.none { it.accountId == item.accountId && it.id == item.id }
-                                ) {
-                                    aggregated.add(item)
-                                }
-                            }
-                        }
-                    }
-                    val done = completedCount.incrementAndGet()
-                    withContext(Dispatchers.Main) {
+                    val filtered = accountMatches.filter { item -> matchesFilter(item, filter) }
+                    synchronized(aggregated) {
+                        completed++
+                        aggregated.addAll(filtered)
                         onProgress(
-                            UnifiedSearchProgress(
-                                completedAccounts = done,
+                            UnifiedCloudSearchProgress(
+                                completedAccounts = completed,
                                 totalAccounts = accounts.size,
-                                currentAccountEmail = account.emailOrName,
-                                partialResults = aggregated.toList().sortedByDescending { it.lastModified }
+                                currentAccountName = "${account.provider.displayName} (${account.emailOrName})",
+                                partialResults = aggregated.toList()
                             )
                         )
                     }
+                    filtered
                 }
             }
-            jobs.awaitAll()
+            deferredList.awaitAll()
         }
 
-        aggregated.toList().sortedWith(
-            compareByDescending<FileItem> { it.isDirectory }.thenByDescending { it.lastModified }
+        aggregated.sortedWith(
+            compareByDescending<FileItem> { it.isDirectory }
+                .thenBy { it.name.lowercase(Locale("tr", "TR")) }
         )
     }
 
     private fun matchesFilter(item: FileItem, filter: CloudSearchFilter): Boolean {
         return when (filter) {
             CloudSearchFilter.ALL -> true
-            CloudSearchFilter.VIDEO -> item.isVideoFile()
-            CloudSearchFilter.DOCUMENT -> item.isDocumentFile()
-            CloudSearchFilter.ARCHIVE -> item.isArchiveFile()
+            CloudSearchFilter.VIDEOS -> item.isVideo
+            CloudSearchFilter.AUDIO -> item.isAudio
+            CloudSearchFilter.IMAGES -> item.isImage
+            CloudSearchFilter.DOCUMENTS -> item.isDocument
+            CloudSearchFilter.ARCHIVES -> item.isArchive || item.isApk
         }
     }
 
     /**
-     * Tek bir bulut hesabının içindeki klasörü listeler (00:37'deki Google Drive klasör gezintisi).
+     * Seçilen bulut hesabındaki klasörün içeriğini listeler.
+     * Her hesap kendi benzersiz account.id ve folderId anahtarıyla sorgulanır.
      */
     suspend fun listCloudFolder(
         context: Context,
         account: CloudAccount,
-        folderIdOrPath: String = "root"
+        folderIdOrPath: String = "root",
+        forceRefresh: Boolean = false
     ): List<FileItem> = withContext(Dispatchers.IO) {
-        val items = when (account.provider) {
-            CloudProviderType.GOOGLE_DRIVE -> listGoogleDriveFolder(account, folderIdOrPath.ifBlank { "root" })
-            CloudProviderType.DROPBOX -> listDropboxFolder(account, if (folderIdOrPath == "root") "" else folderIdOrPath)
-            CloudProviderType.ONEDRIVE -> listOneDriveFolder(account, folderIdOrPath)
-            CloudProviderType.BOX -> listBoxFolder(account, if (folderIdOrPath == "root") "0" else folderIdOrPath)
-            CloudProviderType.NEXTCLOUD -> listWebDavFolder(account, if (folderIdOrPath == "root") "/" else folderIdOrPath)
-            CloudProviderType.YANDEX -> listYandexFolder(account, if (folderIdOrPath == "root") "disk:/" else folderIdOrPath)
+        lastCloudErrorMessage = null
+        val cacheKey = "${account.id}|$folderIdOrPath"
+        if (!forceRefresh) {
+            folderCache[cacheKey]?.let { cached ->
+                if (cached.isNotEmpty()) return@withContext cached
+            }
         }
-        appendToCache(context, account.id, items)
-        items.sortedWith(compareByDescending<FileItem> { it.isDirectory }.thenBy { it.name.lowercase() })
+
+        val items = try {
+            when (account.provider) {
+                CloudProviderType.GOOGLE_DRIVE -> listGoogleDriveFolder(context, account, folderIdOrPath)
+                CloudProviderType.DROPBOX -> listDropboxFolder(account, if (folderIdOrPath == "root") "" else folderIdOrPath)
+                CloudProviderType.ONEDRIVE -> listOneDriveFolder(account, folderIdOrPath)
+                CloudProviderType.BOX -> listBoxFolder(account, if (folderIdOrPath == "root") "0" else folderIdOrPath)
+                CloudProviderType.NEXTCLOUD -> listWebDavFolder(account, if (folderIdOrPath == "root") "/" else folderIdOrPath)
+                CloudProviderType.YANDEX -> listYandexFolder(account, if (folderIdOrPath == "root") "disk:/" else folderIdOrPath)
+            }
+        } catch (e: Exception) {
+            lastCloudErrorMessage = e.localizedMessage
+            emptyList()
+        }
+
+        val sorted = items.sortedWith(
+            compareByDescending<FileItem> { it.isDirectory }
+                .thenBy { it.name.lowercase(Locale("tr", "TR")) }
+        )
+        if (sorted.isNotEmpty()) {
+            folderCache[cacheKey] = sorted
+        }
+        sorted
     }
 
-    private fun searchSingleAccount(account: CloudAccount, query: String): List<FileItem> {
+    private suspend fun searchSingleAccountInternal(context: Context, account: CloudAccount, query: String): List<FileItem> {
         return when (account.provider) {
-            CloudProviderType.GOOGLE_DRIVE -> searchGoogleDrive(account, query)
+            CloudProviderType.GOOGLE_DRIVE -> searchGoogleDrive(context, account, query)
             CloudProviderType.DROPBOX -> searchDropbox(account, query)
             CloudProviderType.ONEDRIVE -> searchOneDrive(account, query)
             CloudProviderType.BOX -> searchBox(account, query)
@@ -246,86 +304,113 @@ object CloudManager {
     }
 
     // ==================== 1. GOOGLE DRIVE API v3 ====================
-    // Orijinal APK'daki (classes.dex [31384]) birebir sorgu yapısı:
-    // nextPageToken, files(kind,id,name,mimeType,parents,capabilities/canDownload,capabilities/canEdit,size,modifiedTime,createdTime,webContentLink,thumbnailLink,webViewLink,shortcutDetails,trashed)
-    private fun listGoogleDriveFolder(account: CloudAccount, folderId: String): List<FileItem> {
-        if (account.accessToken.startsWith("DEMO_")) {
-            return generateDemoDriveFiles(account, folderId)
-        }
+    private suspend fun listGoogleDriveFolder(context: Context, account: CloudAccount, folderId: String): List<FileItem> {
         val escapedParent = folderId.replace("'", "\\'")
         val q = "'$escapedParent' in parents and trashed = false"
-        return executeGoogleDriveQuery(account, q)
+        return executeGoogleDriveQuery(context, account, q, folderId)
     }
 
-    private fun searchGoogleDrive(account: CloudAccount, query: String): List<FileItem> {
-        if (account.accessToken.startsWith("DEMO_")) {
-            return generateDemoDriveFiles(account, "root", searchMode = true).filter {
-                query.isEmpty() || it.name.contains(query, ignoreCase = true)
-            }
-        }
+    private suspend fun searchGoogleDrive(context: Context, account: CloudAccount, query: String): List<FileItem> {
         val escaped = query.replace("'", "\\'")
         val q = if (escaped.isEmpty()) {
             "trashed = false"
         } else {
             "name contains '$escaped' and trashed = false"
         }
-        return executeGoogleDriveQuery(account, q)
+        return executeGoogleDriveQuery(context, account, q, "root")
     }
 
-    private fun executeGoogleDriveQuery(account: CloudAccount, q: String): List<FileItem> {
-        val encodedQ = URLEncoder.encode(q, "UTF-8")
-        val fields = URLEncoder.encode(
-            "nextPageToken,files(id,name,mimeType,parents,size,modifiedTime,webContentLink,trashed)",
-            "UTF-8"
-        )
-        val url = "https://www.googleapis.com/drive/v3/files?q=$encodedQ&fields=$fields&pageSize=200&supportsAllDrives=true&includeItemsFromAllDrives=true"
+    private suspend fun executeGoogleDriveQuery(
+        context: Context,
+        account: CloudAccount,
+        q: String,
+        parentFolderId: String
+    ): List<FileItem> {
+        var token = resolveGoogleDriveToken(context, account, forceRefresh = false)
+        if (token.isBlank() || token.startsWith("DEMO_")) {
+            if (lastCloudErrorMessage == null) {
+                lastCloudErrorMessage = "${account.emailOrName} hesabı için Google Drive oturum izni bekleniyor."
+            }
+            return emptyList()
+        }
+
+        var responsePair = performDriveHttpQuery(token, q)
+        // 401 Unauthorized dönerse token'ı yenileyip tekrar dene (Orijinal APK'daki GoogleDriveAuth RETRY mantığı)
+        if (responsePair.first == 401) {
+            token = resolveGoogleDriveToken(context, account, forceRefresh = true)
+            if (token.isNotBlank()) {
+                responsePair = performDriveHttpQuery(token, q)
+            }
+        }
+
+        val code = responsePair.first
+        val body = responsePair.second
+        if (code !in 200..299 || body.isNullOrBlank()) {
+            if (code == 401 || code == 403) {
+                lastCloudErrorMessage = "Google Drive erişim yetkisi reddedildi (HTTP $code). Hesaba tekrar dokunarak izin verin."
+            } else if (code > 0) {
+                lastCloudErrorMessage = "Google Drive bağlantı hatası (HTTP $code)."
+            }
+            return emptyList()
+        }
+
+        val json = JSONObject(body)
+        val files = json.optJSONArray("files") ?: return emptyList()
+        val result = ArrayList<FileItem>(files.length())
+        for (i in 0 until files.length()) {
+            val obj = files.getJSONObject(i)
+            if (obj.optBoolean("trashed", false)) continue
+            val id = obj.optString("id")
+            val name = obj.optString("name")
+            val mime = obj.optString("mimeType", "")
+            val isFolder = mime == "application/vnd.google-apps.folder"
+            val size = obj.optLong("size", 0L)
+            val modifiedTime = parseIsoTimestamp(obj.optString("modifiedTime", ""))
+            val parentsArr = obj.optJSONArray("parents")
+            val parentId = if (parentsArr != null && parentsArr.length() > 0) parentsArr.optString(0) else parentFolderId
+            val streamUrl = "https://www.googleapis.com/drive/v3/files/$id?alt=media"
+            result.add(
+                FileItem(
+                    id = id,
+                    name = name,
+                    path = id,
+                    isDirectory = isFolder,
+                    size = size,
+                    lastModified = modifiedTime,
+                    childCount = -1,
+                    mimeType = mime,
+                    sourceType = FileSourceType.CLOUD,
+                    accountId = account.id,
+                    accountEmailOrLabel = account.emailOrName,
+                    providerName = account.provider.displayName,
+                    downloadUrl = streamUrl,
+                    thumbnailUrl = obj.optString("thumbnailLink", ""),
+                    parentId = parentId
+                )
+            )
+        }
+        return result
+    }
+
+    private fun performDriveHttpQuery(token: String, q: String): Pair<Int, String?> {
+        val fields = "nextPageToken,files(kind,id,name,mimeType,parents,capabilities/canDownload,capabilities/canEdit,size,modifiedTime,createdTime,webContentLink,thumbnailLink,webViewLink,shortcutDetails,trashed)"
+        val url = "https://www.googleapis.com/drive/v3/files" +
+            "?q=" + URLEncoder.encode(q, "UTF-8") +
+            "&fields=" + URLEncoder.encode(fields, "UTF-8") +
+            "&pageSize=500&supportsAllDrives=true&includeItemsFromAllDrives=true"
         val req = Request.Builder()
             .url(url)
-            .header("Authorization", "Bearer ${account.accessToken}")
+            .header("Authorization", "Bearer $token")
             .get()
             .build()
-
         httpClient.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) return emptyList()
-            val body = resp.body?.string() ?: return emptyList()
-            val json = JSONObject(body)
-            val files = json.optJSONArray("files") ?: return emptyList()
-            val list = mutableListOf<FileItem>()
-            for (i in 0 until files.length()) {
-                val obj = files.getJSONObject(i)
-                val id = obj.optString("id")
-                val name = obj.optString("name")
-                val mime = obj.optString("mimeType", "")
-                val isDir = mime == "application/vnd.google-apps.folder"
-                val size = obj.optLong("size", 0L)
-                val modTime = parseIsoTime(obj.optString("modifiedTime"))
-                val parentsArr = obj.optJSONArray("parents")
-                val parentId = if (parentsArr != null && parentsArr.length() > 0) parentsArr.optString(0) else "root"
-                val streamUrl = "https://www.googleapis.com/drive/v3/files/$id?alt=media"
-                list.add(
-                    FileItem(
-                        id = id,
-                        name = name,
-                        path = id,
-                        isDirectory = isDir,
-                        size = size,
-                        lastModified = modTime,
-                        mimeType = mime,
-                        sourceType = FileSourceType.CLOUD,
-                        accountId = account.id,
-                        accountEmailOrLabel = account.emailOrName,
-                        providerName = account.provider.displayName,
-                        downloadUrl = streamUrl,
-                        parentId = parentId
-                    )
-                )
-            }
-            return list
+            return Pair(resp.code, resp.body?.string())
         }
     }
 
     // ==================== 2. DROPBOX API v2 ====================
     private fun listDropboxFolder(account: CloudAccount, path: String): List<FileItem> {
+        if (account.accessToken.isBlank()) return emptyList()
         val payload = JSONObject().apply {
             put("path", path)
             put("recursive", false)
@@ -345,6 +430,7 @@ object CloudManager {
     }
 
     private fun searchDropbox(account: CloudAccount, query: String): List<FileItem> {
+        if (account.accessToken.isBlank()) return emptyList()
         if (query.isBlank()) return listDropboxFolder(account, "")
         val payload = JSONObject().apply {
             put("query", query)
@@ -358,20 +444,21 @@ object CloudManager {
             if (!resp.isSuccessful) return emptyList()
             val json = JSONObject(resp.body?.string() ?: return emptyList())
             val matches = json.optJSONArray("matches") ?: return emptyList()
-            val metadataArr = JSONArray()
+            val entries = JSONArray()
             for (i in 0 until matches.length()) {
                 val m = matches.getJSONObject(i).optJSONObject("metadata")?.optJSONObject("metadata")
-                if (m != null) metadataArr.put(m)
+                if (m != null) entries.put(m)
             }
-            return parseDropboxEntries(account, metadataArr)
+            return parseDropboxEntries(account, entries)
         }
     }
 
     private fun parseDropboxEntries(account: CloudAccount, entries: JSONArray): List<FileItem> {
-        val list = mutableListOf<FileItem>()
+        val list = ArrayList<FileItem>(entries.length())
         for (i in 0 until entries.length()) {
             val e = entries.getJSONObject(i)
             val tag = e.optString(".tag")
+            val isDir = tag == "folder"
             val pathDisplay = e.optString("path_display", "")
             val name = e.optString("name", "")
             list.add(
@@ -379,39 +466,41 @@ object CloudManager {
                     id = e.optString("id", pathDisplay),
                     name = name,
                     path = pathDisplay,
-                    isDirectory = tag == "folder",
+                    isDirectory = isDir,
                     size = e.optLong("size", 0L),
-                    lastModified = parseIsoTime(e.optString("client_modified")),
+                    lastModified = parseIsoTimestamp(e.optString("client_modified", "")),
                     sourceType = FileSourceType.CLOUD,
                     accountId = account.id,
                     accountEmailOrLabel = account.emailOrName,
-                    providerName = account.provider.displayName,
-                    downloadUrl = "https://content.dropboxapi.com/2/files/download"
+                    providerName = account.provider.displayName
                 )
             )
         }
         return list
     }
 
-    // ==================== 3. MICROSOFT ONEDRIVE GRAPH v1.0 ====================
+    // ==================== 3. MICROSOFT ONEDRIVE (GRAPH API) ====================
     private fun listOneDriveFolder(account: CloudAccount, folderId: String): List<FileItem> {
+        if (account.accessToken.isBlank()) return emptyList()
         val endpoint = if (folderId == "root" || folderId.isBlank()) {
             "https://graph.microsoft.com/v1.0/me/drive/root/children"
         } else {
             "https://graph.microsoft.com/v1.0/me/drive/items/$folderId/children"
         }
-        return executeOneDriveGet(account, endpoint)
+        return executeOneDriveRequest(account, endpoint)
     }
 
     private fun searchOneDrive(account: CloudAccount, query: String): List<FileItem> {
+        if (account.accessToken.isBlank()) return emptyList()
+        if (query.isBlank()) return listOneDriveFolder(account, "root")
         val encoded = URLEncoder.encode(query, "UTF-8")
         val endpoint = "https://graph.microsoft.com/v1.0/me/drive/root/search(q='$encoded')"
-        return executeOneDriveGet(account, endpoint)
+        return executeOneDriveRequest(account, endpoint)
     }
 
-    private fun executeOneDriveGet(account: CloudAccount, url: String): List<FileItem> {
+    private fun executeOneDriveRequest(account: CloudAccount, endpoint: String): List<FileItem> {
         val req = Request.Builder()
-            .url(url)
+            .url(endpoint)
             .header("Authorization", "Bearer ${account.accessToken}")
             .get()
             .build()
@@ -419,19 +508,20 @@ object CloudManager {
             if (!resp.isSuccessful) return emptyList()
             val json = JSONObject(resp.body?.string() ?: return emptyList())
             val values = json.optJSONArray("value") ?: return emptyList()
-            val result = mutableListOf<FileItem>()
+            val out = ArrayList<FileItem>(values.length())
             for (i in 0 until values.length()) {
                 val obj = values.getJSONObject(i)
                 val isDir = obj.has("folder")
                 val dl = obj.optString("@microsoft.graph.downloadUrl", "")
-                result.add(
+                out.add(
                     FileItem(
                         id = obj.optString("id"),
                         name = obj.optString("name"),
                         path = obj.optString("id"),
                         isDirectory = isDir,
                         size = obj.optLong("size", 0L),
-                        lastModified = parseIsoTime(obj.optString("lastModifiedDateTime")),
+                        lastModified = parseIsoTimestamp(obj.optString("lastModifiedDateTime", "")),
+                        childCount = obj.optJSONObject("folder")?.optInt("childCount", -1) ?: -1,
                         sourceType = FileSourceType.CLOUD,
                         accountId = account.id,
                         accountEmailOrLabel = account.emailOrName,
@@ -440,12 +530,13 @@ object CloudManager {
                     )
                 )
             }
-            return result
+            return out
         }
     }
 
-    // ==================== 4. BOX API v2.0 ====================
+    // ==================== 4. BOX CLOUD API v2.0 ====================
     private fun listBoxFolder(account: CloudAccount, folderId: String): List<FileItem> {
+        if (account.accessToken.isBlank()) return emptyList()
         val req = Request.Builder()
             .url("https://api.box.com/2.0/folders/$folderId/items?fields=id,name,type,size,modified_at")
             .header("Authorization", "Bearer ${account.accessToken}")
@@ -454,28 +545,27 @@ object CloudManager {
         httpClient.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) return emptyList()
             val json = JSONObject(resp.body?.string() ?: return emptyList())
-            val entries = json.optJSONArray("entries") ?: return emptyList()
-            return parseBoxEntries(account, entries)
+            return parseBoxEntries(account, json.optJSONArray("entries") ?: return emptyList())
         }
     }
 
     private fun searchBox(account: CloudAccount, query: String): List<FileItem> {
-        val encoded = URLEncoder.encode(query, "UTF-8")
+        if (account.accessToken.isBlank()) return emptyList()
+        if (query.isBlank()) return listBoxFolder(account, "0")
         val req = Request.Builder()
-            .url("https://api.box.com/2.0/search?query=$encoded&fields=id,name,type,size,modified_at")
+            .url("https://api.box.com/2.0/search?query=${URLEncoder.encode(query, "UTF-8")}")
             .header("Authorization", "Bearer ${account.accessToken}")
             .get()
             .build()
         httpClient.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) return emptyList()
             val json = JSONObject(resp.body?.string() ?: return emptyList())
-            val entries = json.optJSONArray("entries") ?: return emptyList()
-            return parseBoxEntries(account, entries)
+            return parseBoxEntries(account, json.optJSONArray("entries") ?: return emptyList())
         }
     }
 
     private fun parseBoxEntries(account: CloudAccount, entries: JSONArray): List<FileItem> {
-        val list = mutableListOf<FileItem>()
+        val list = ArrayList<FileItem>(entries.length())
         for (i in 0 until entries.length()) {
             val obj = entries.getJSONObject(i)
             val id = obj.optString("id")
@@ -487,12 +577,12 @@ object CloudManager {
                     path = id,
                     isDirectory = isDir,
                     size = obj.optLong("size", 0L),
-                    lastModified = parseIsoTime(obj.optString("modified_at")),
+                    lastModified = parseIsoTimestamp(obj.optString("modified_at", "")),
                     sourceType = FileSourceType.CLOUD,
                     accountId = account.id,
                     accountEmailOrLabel = account.emailOrName,
                     providerName = account.provider.displayName,
-                    downloadUrl = "https://api.box.com/2.0/files/$id/content"
+                    downloadUrl = if (isDir) "" else "https://api.box.com/2.0/files/$id/content"
                 )
             )
         }
@@ -500,10 +590,15 @@ object CloudManager {
     }
 
     // ==================== 5. NEXTCLOUD / WEBDAV ====================
-    private fun listWebDavFolder(account: CloudAccount, relPath: String): List<FileItem> {
-        val base = account.serverUrl.trimEnd('/')
-        val fullUrl = "$base/${relPath.trimStart('/')}"
-        val propfindXml = """<?xml version="1.0" encoding="utf-8" ?><D:propfind xmlns:D="DAV:"><D:allprop/></D:propfind>"""
+    private fun listWebDavFolder(account: CloudAccount, relativePath: String): List<FileItem> {
+        val baseUrl = account.serverUrl.trimEnd('/')
+        if (baseUrl.isEmpty()) return emptyList()
+        val rel = if (relativePath.startsWith("/")) relativePath else "/$relativePath"
+        val fullUrl = "$baseUrl$rel"
+        val propfindXml = """<?xml version="1.0" encoding="utf-8" ?>
+            <d:propfind xmlns:d="DAV:">
+              <d:prop><d:displayname/><d:getcontentlength/><d:getlastmodified/><d:resourcetype/></d:prop>
+            </d:propfind>""".trimIndent()
         val req = Request.Builder()
             .url(fullUrl)
             .method("PROPFIND", propfindXml.toRequestBody("application/xml".toMediaType()))
@@ -513,39 +608,41 @@ object CloudManager {
         httpClient.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) return emptyList()
             val xml = resp.body?.string() ?: return emptyList()
-            val hrefRegex = Regex("<[^:>]*:?href>([^<]+)</[^:>]*:?href>", RegexOption.IGNORE_CASE)
-            val list = mutableListOf<FileItem>()
-            for (m in hrefRegex.findAll(xml).drop(1)) {
-                val href = java.net.URLDecoder.decode(m.groupValues[1], "UTF-8").trimEnd('/')
-                val name = href.substringAfterLast('/')
-                if (name.isNotBlank()) {
-                    val isDir = m.groupValues[1].endsWith("/")
-                    list.add(
-                        FileItem(
-                            id = href,
-                            name = name,
-                            path = href,
-                            isDirectory = isDir,
-                            size = 0L,
-                            lastModified = System.currentTimeMillis(),
-                            sourceType = FileSourceType.CLOUD,
-                            accountId = account.id,
-                            accountEmailOrLabel = account.emailOrName,
-                            providerName = account.provider.displayName,
-                            downloadUrl = "$base/${href.trimStart('/')}"
-                        )
-                    )
+            val out = ArrayList<FileItem>()
+            val responses = xml.split("<d:response>", "<D:response>").drop(1)
+            for (block in responses) {
+                val href = extractXmlTag(block, "href").trim()
+                val name = extractXmlTag(block, "displayname").ifBlank {
+                    href.trimEnd('/').substringAfterLast('/')
                 }
+                if (name.isBlank()) continue
+                val isDir = block.contains("collection", ignoreCase = true)
+                val size = extractXmlTag(block, "getcontentlength").toLongOrNull() ?: 0L
+                out.add(
+                    FileItem(
+                        id = href,
+                        name = name,
+                        path = href,
+                        isDirectory = isDir,
+                        size = size,
+                        lastModified = System.currentTimeMillis(),
+                        sourceType = FileSourceType.CLOUD,
+                        accountId = account.id,
+                        accountEmailOrLabel = account.emailOrName,
+                        providerName = account.provider.displayName,
+                        downloadUrl = if (href.startsWith("http")) href else "$baseUrl$href"
+                    )
+                )
             }
-            return list
+            return if (out.size > 1) out.drop(1) else out
         }
     }
 
     // ==================== 6. YANDEX DISK REST API ====================
     private fun listYandexFolder(account: CloudAccount, path: String): List<FileItem> {
-        val encoded = URLEncoder.encode(path, "UTF-8")
+        if (account.accessToken.isBlank()) return emptyList()
         val req = Request.Builder()
-            .url("https://cloud-api.yandex.net/v1/disk/resources?path=$encoded&limit=200")
+            .url("https://cloud-api.yandex.net/v1/disk/resources?path=${URLEncoder.encode(path, "UTF-8")}&limit=200")
             .header("Authorization", "OAuth ${account.accessToken}")
             .get()
             .build()
@@ -558,6 +655,7 @@ object CloudManager {
     }
 
     private fun searchYandex(account: CloudAccount, query: String): List<FileItem> {
+        if (account.accessToken.isBlank()) return emptyList()
         val req = Request.Builder()
             .url("https://cloud-api.yandex.net/v1/disk/resources/files?limit=200")
             .header("Authorization", "OAuth ${account.accessToken}")
@@ -574,7 +672,7 @@ object CloudManager {
     }
 
     private fun parseYandexItems(account: CloudAccount, items: JSONArray): List<FileItem> {
-        val list = mutableListOf<FileItem>()
+        val list = ArrayList<FileItem>(items.length())
         for (i in 0 until items.length()) {
             val obj = items.getJSONObject(i)
             val isDir = obj.optString("type") == "dir"
@@ -586,7 +684,7 @@ object CloudManager {
                     path = p,
                     isDirectory = isDir,
                     size = obj.optLong("size", 0L),
-                    lastModified = parseIsoTime(obj.optString("modified")),
+                    lastModified = parseIsoTimestamp(obj.optString("modified", "")),
                     sourceType = FileSourceType.CLOUD,
                     accountId = account.id,
                     accountEmailOrLabel = account.emailOrName,
@@ -598,41 +696,20 @@ object CloudManager {
         return list
     }
 
-    // Videodaki (00:37 - 00:54) klasör ve medya yapısını test/önizleme modunda birebir gösteren yardımcı
-    private fun generateDemoDriveFiles(account: CloudAccount, folderId: String, searchMode: Boolean = false): List<FileItem> {
-        val now = System.currentTimeMillis()
-        val rootItems = listOf(
-            FileItem("fld_ace", "Ace_Videolar", "fld_ace", true, 0L, now - 86400000L * 40, 2, accountId = account.id, accountEmailOrLabel = account.emailOrName, providerName = "Google Drive", sourceType = FileSourceType.CLOUD, parentId = "root"),
-            FileItem("fld_colab", "Colab Notebooks", "fld_colab", true, 0L, now - 86400000L * 90, 12, accountId = account.id, accountEmailOrLabel = account.emailOrName, providerName = "Google Drive", sourceType = FileSourceType.CLOUD, parentId = "root"),
-            FileItem("fld_mercy", "Mercy", "fld_mercy", true, 0L, now - 86400000L * 35, 3, accountId = account.id, accountEmailOrLabel = account.emailOrName, providerName = "Google Drive", sourceType = FileSourceType.CLOUD, parentId = "root"),
-            FileItem("fld_svt", "svt", "fld_svt", true, 0L, now - 86400000L * 18, 9, accountId = account.id, accountEmailOrLabel = account.emailOrName, providerName = "Google Drive", sourceType = FileSourceType.CLOUD, parentId = "root"),
-            FileItem("fld_torrent", "Torrent", "fld_torrent", true, 0L, now - 86400000L * 120, 1, accountId = account.id, accountEmailOrLabel = account.emailOrName, providerName = "Google Drive", sourceType = FileSourceType.CLOUD, parentId = "root"),
-            FileItem("fld_yt", "Youtube_Videolari", "fld_yt", true, 0L, now - 86400000L * 60, 2, accountId = account.id, accountEmailOrLabel = account.emailOrName, providerName = "Google Drive", sourceType = FileSourceType.CLOUD, parentId = "root"),
-            FileItem("file_doc1", "Adsız doküman", "file_doc1", false, 24_500L, now - 86400000L * 10, mimeType = "application/vnd.google-apps.document", accountId = account.id, accountEmailOrLabel = account.emailOrName, providerName = "Google Drive", sourceType = FileSourceType.CLOUD, parentId = "root"),
-            FileItem("file_sheet1", "Adsız e-tablo", "file_sheet1", false, 18_200L, now - 86400000L * 10, mimeType = "application/vnd.google-apps.spreadsheet", accountId = account.id, accountEmailOrLabel = account.emailOrName, providerName = "Google Drive", sourceType = FileSourceType.CLOUD, parentId = "root"),
-            FileItem("file_intime", "In.Time.2011.720p.AMZN.WEB-DL.DDP5.1.AV1-Av1Core.mkv", "file_intime", false, 577L * 1000 * 1000, now - 86400000L * 20, mimeType = "video/x-matroska", accountId = account.id, accountEmailOrLabel = account.emailOrName, providerName = "Google Drive", sourceType = FileSourceType.CLOUD, parentId = "root"),
-            FileItem("file_bone", "The.Bone.Collector.1999.720p.AMZN.WEB-DL.DDP5.1.AV1-Av1Core.mkv", "file_bone", false, 479L * 1000 * 1000, now - 86400000L * 20, mimeType = "video/x-matroska", accountId = account.id, accountEmailOrLabel = account.emailOrName, providerName = "Google Drive", sourceType = FileSourceType.CLOUD, parentId = "root")
-        )
-        val ytItems = listOf(
-            FileItem("file_yt1", "CEZALI ŞİŞE ÇEVİRMECE!!! [lhDuJY7EbFc].webm", "file_yt1", false, 20_140_000L, now - 86400000L * 60, mimeType = "video/webm", accountId = account.id, accountEmailOrLabel = account.emailOrName, providerName = "Google Drive", sourceType = FileSourceType.CLOUD, parentId = "fld_yt"),
-            FileItem("file_yt2", "Su balonu cezalı taş,kağıt,makas [q-F3tpbb6q8].webm", "file_yt2", false, 15_550_000L, now - 86400000L * 60, mimeType = "video/webm", accountId = account.id, accountEmailOrLabel = account.emailOrName, providerName = "Google Drive", sourceType = FileSourceType.CLOUD, parentId = "fld_yt")
-        )
-        if (searchMode) return rootItems + ytItems
-        return when (folderId) {
-            "fld_yt" -> ytItems
-            else -> rootItems
-        }
+    private fun extractXmlTag(xml: String, tag: String): String {
+        val regex = Regex("<(?:\\w+:)?$tag[^>]*>(.*?)</(?:\\w+:)?$tag>", RegexOption.IGNORE_CASE)
+        return regex.find(xml)?.groupValues?.getOrNull(1) ?: ""
     }
 
-    private fun parseIsoTime(iso: String?): Long {
-        if (iso.isNullOrBlank()) return System.currentTimeMillis()
+    private fun parseIsoTimestamp(iso: String): Long {
+        if (iso.isBlank()) return System.currentTimeMillis()
         return try {
             val clean = iso.substringBefore('.').replace("Z", "")
             val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).apply {
                 timeZone = TimeZone.getTimeZone("UTC")
             }
             sdf.parse(clean)?.time ?: System.currentTimeMillis()
-        } catch (_: Throwable) {
+        } catch (_: Exception) {
             System.currentTimeMillis()
         }
     }

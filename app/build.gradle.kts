@@ -110,6 +110,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
     // Ağ ve Bulut REST İstemcisi (Google Drive v3, Dropbox v2, OneDrive Graph, Box v2, Yandex, WebDAV/Nextcloud)
+    implementation("com.google.android.gms:play-services-auth:21.2.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.google.code.gson:gson:2.11.0")
 
