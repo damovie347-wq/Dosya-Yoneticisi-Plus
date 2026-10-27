@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dosya Yöneticisi + Orijinal ve Modern Tema Renk Paleti -->
+    <color name="toolbar_dark">#212121</color>
+    <color name="toolbar_amoled">#000000</color>
+    <color name="accent_teal">#26A69A</color>
+    <color name="accent_teal_dark">#00897B</color>
+    <color name="storage_green">#5AB55E</color>
+    <color name="storage_amber">#FFA726</color>
+    <color name="storage_red">#EF5350</color>
+    <color name="home_crumb_coral">#FF5252</color>
+
+    <!-- Açık Tema (Light) -->
+    <color name="bg_light">#FFFFFF</color>
+    <color name="surface_light">#F7F8FA</color>
+    <color name="card_light">#FFFFFF</color>
+    <color name="text_primary_light">#212121</color>
+    <color name="text_secondary_light">#757575</color>
+    <color name="divider_light">#EEEEEE</color>
+    <color name="circle_badge_light">#F5F6F8</color>
+    <color name="circle_stroke_light">#E0E3E7</color>
+
+    <!-- Koyu Tema (Dark) -->
+    <color name="bg_dark">#121212</color>
+    <color name="surface_dark">#1E1E1E</color>
+    <color name="card_dark">#1A1A1A</color>
+    <color name="text_primary_dark">#F5F5F5</color>
+    <color name="text_secondary_dark">#9E9E9E</color>
+    <color name="divider_dark">#2C2C2C</color>
+    <color name="circle_badge_dark">#242424</color>
+    <color name="circle_stroke_dark">#383838</color>
+
+    <!-- AMOLED Tam Siyah Tema (Pure Black #000000) -->
+    <color name="bg_amoled">#000000</color>
+    <color name="surface_amoled">#080808</color>
+    <color name="card_amoled">#0A0A0A</color>
+    <color name="text_primary_amoled">#FFFFFF</color>
+    <color name="text_secondary_amoled">#8E8E93</color>
+    <color name="divider_amoled">#181818</color>
+    <color name="circle_badge_amoled">#0D0D0D</color>
+    <color name="circle_stroke_amoled">#262626</color>
+
+    <!-- Klasör ve Dosya İkon Renkleri -->
+    <color name="folder_amber">#F5B971</color>
+    <color name="folder_amber_dark">#E5A150</color>
+    <color name="icon_downloads">#F5A623</color>
+    <color name="icon_images">#5C6BC0</color>
+    <color name="icon_audio">#26A69A</color>
+    <color name="icon_videos">#EF5350</color>
+    <color name="icon_docs">#29B6F6</color>
+    <color name="icon_apps">#66BB6A</color>
+    <color name="icon_new_files">#26A69A</color>
+    <color name="icon_cloud">#29B6F6</color>
+    <color name="icon_remote">#FFA726</color>
+    <color name="icon_network">#546E7A</color>
+</resources>

@@ -1,0 +1,59 @@
+name: Android APK Build (Dosya Yöneticisi +)
+
+on:
+  push:
+    branches: [ "main", "master", "**" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    name: Optimize Edilmiş APK Derle (Debug & Imzalı Release)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Kaynak Kodunu İndir (Checkout)
+        uses: actions/checkout@v4
+
+      - name: JDK 17 Kurulumu
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Android SDK Kurulumu
+        uses: android-actions/setup-android@v3
+
+      - name: Gradle Kurulumu ve Önbellek (Gradle 8.7)
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Kişisel İmza Anahtarı (Keystore) Oluştur
+        run: |
+          if [ ! -f app/personal-release-key.jks ]; then
+            keytool -genkeypair -v \
+              -keystore app/personal-release-key.jks \
+              -alias filemanagerplus \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass android123 -keypass android123 \
+              -dname "CN=Dosya Yoneticisi Plus, OU=Personal, O=AlphaInventorClone, L=Mersin, S=Mersin, C=TR"
+          fi
+
+      - name: İmzalı Release ve Debug APK Derle
+        run: gradle assembleDebug assembleRelease --stacktrace
+
+      - name: Derlenen APK Dosyalarını Topla ve Yeniden Adlandır
+        run: |
+          mkdir -p dist-apk
+          cp app/build/outputs/apk/release/app-release.apk "dist-apk/Dosya_Yoneticisi_Plus_v3.6.7_Release_Signed.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk "dist-apk/Dosya_Yoneticisi_Plus_v3.6.7_Debug.apk"
+          ls -lh dist-apk/
+
+      - name: APK Dosyalarını GitHub Artifacts Olarak Yükle
+        uses: actions/upload-artifact@v4
+        with:
+          name: Dosya-Yoneticisi-Plus-APK
+          path: dist-apk/*.apk
+          if-no-files-found: error

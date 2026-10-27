@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.FileManagerPlus" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/accent_teal</item>
+        <item name="colorPrimaryDark">@color/toolbar_dark</item>
+        <item name="colorAccent">@color/accent_teal</item>
+        <item name="android:statusBarColor">@color/toolbar_dark</item>
+        <item name="android:navigationBarColor">@color/toolbar_dark</item>
+        <item name="android:windowBackground">@color/bg_light</item>
+    </style>
+
+    <style name="Theme.FileManagerPlus.Player" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">@color/accent_teal</item>
+        <item name="android:statusBarColor">#000000</item>
+        <item name="android:navigationBarColor">#000000</item>
+        <item name="android:windowBackground">#000000</item>
+    </style>
+</resources>

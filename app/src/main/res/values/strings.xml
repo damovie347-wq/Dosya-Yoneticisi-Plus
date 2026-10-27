@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Dosya Yöneticisi +</string>
+    <string name="main_storage">Ana bellek</string>
+    <string name="downloads">İndirilenler</string>
+    <string name="storage_analysis">Bellek Analizi</string>
+    <string name="images">Görüntüler</string>
+    <string name="audio">Ses</string>
+    <string name="videos">Videolar</string>
+    <string name="documents">Belgeler</string>
+    <string name="apps">Uygulamalar</string>
+    <string name="new_files">Yeni Dosyalar</string>
+    <string name="cloud">Bulut</string>
+    <string name="remote">Uzak</string>
+    <string name="network_access">Ağdan erişim</string>
+    <string name="recycle_bin">Geri Dönüşüm Kutusu</string>
+    <string name="home_screen">Ana Ekran</string>
+    <string name="settings">Ayarlar</string>
+    <string name="analyze">Analiz et</string>
+    <string name="refresh">Yenile</string>
+    <string name="used_percent">Kullanılan %1$d%%</string>
+    <string name="used_percent_caps">KULLANILAN %1$d%%</string>
+    <string name="add_cloud_location">+ Bir bulut konumu ekle</string>
+    <string name="add_remote_location">+ Uzak bir konum ekle</string>
+    <string name="unified_cloud_search_hint">Tüm bulut hesaplarında (Google Drive vb.) dosya ara...</string>
+</resources>

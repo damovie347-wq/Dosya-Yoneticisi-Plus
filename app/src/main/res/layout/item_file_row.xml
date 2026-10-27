@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/fileRowRoot"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="?attr/selectableItemBackground"
+    android:orientation="vertical">
+
+    <!-- Grup Tarihi Başlığı (Yeni Dosyalar ekranındaki "27 Eki 2026" veya Bulut Hesap Başlığı için) -->
+    <TextView
+        android:id="@+id/tvSectionHeader"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingStart="16dp"
+        android:paddingTop="10dp"
+        android:paddingEnd="16dp"
+        android:paddingBottom="4dp"
+        android:text="27 Eki 2026"
+        android:textColor="@color/accent_teal"
+        android:textSize="12sp"
+        android:textStyle="bold"
+        android:visibility="gone" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="60dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="14dp"
+        android:paddingEnd="14dp">
+
+        <FrameLayout
+            android:layout_width="42dp"
+            android:layout_height="42dp">
+
+            <ImageView
+                android:id="@+id/ivFileIcon"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:layout_gravity="center"
+                android:scaleType="centerCrop"
+                android:src="@drawable/ic_folder_modern" />
+
+            <!-- Protokol veya Uzantı Rozeti (FTP, SMB, MKV, PDF vb.) -->
+            <TextView
+                android:id="@+id/tvIconBadge"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="bottom|start"
+                android:background="#CC212121"
+                android:paddingStart="3dp"
+                android:paddingEnd="3dp"
+                android:text="MKV"
+                android:textColor="#FFFFFF"
+                android:textSize="8sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
+        </FrameLayout>
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="14dp"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/tvFileName"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:ellipsize="middle"
+                android:singleLine="true"
+                android:text="Files"
+                android:textColor="@color/text_primary_light"
+                android:textSize="15sp" />
+
+            <TextView
+                android:id="@+id/tvFileSubInfo"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:ellipsize="end"
+                android:singleLine="true"
+                android:text="325 öğe"
+                android:textColor="@color/text_secondary_light"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/tvFileDate"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:text="20.08.2026"
+            android:textColor="@color/text_secondary_light"
+            android:textSize="11sp" />
+
+        <CheckBox
+            android:id="@+id/cbSelect"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="6dp"
+            android:clickable="false"
+            android:focusable="false"
+            android:visibility="gone" />
+    </LinearLayout>
+
+    <View
+        android:id="@+id/rowDivider"
+        android:layout_width="match_parent"
+        android:layout_height="0.7dp"
+        android:layout_marginStart="70dp"
+        android:background="@color/divider_light" />
+</LinearLayout>
