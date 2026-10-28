@@ -407,7 +407,7 @@ class CloudAccountsAdapter(
  * 4. UZAK BAĞLANTILAR (FTP/SFTP/SMB/WebDAV) ADAPTER'I
  */
 class RemoteAccountsAdapter(
-    private var accounts: List<RemoteAccount>,
+    private var accounts: List<RemoteAccount> = emptyList(),
     private val onClick: (RemoteAccount) -> Unit,
     private val onLongClick: (RemoteAccount) -> Unit
 ) : RecyclerView.Adapter<RemoteAccountsAdapter.RemoteVH>() {
@@ -416,6 +416,8 @@ class RemoteAccountsAdapter(
         accounts = newList
         notifyDataSetChanged()
     }
+
+    fun submitList(newList: List<RemoteAccount>) = updateAccounts(newList)
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RemoteVH {
         val binding = ItemFileRowBinding.inflate(LayoutInflater.from(parent.context), parent, false)

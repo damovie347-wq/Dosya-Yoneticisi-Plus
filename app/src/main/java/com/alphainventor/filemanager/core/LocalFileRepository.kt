@@ -1,12 +1,9 @@
 package com.alphainventor.filemanager.core
 
-import android.app.usage.StorageStatsManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
-import android.content.pm.PackageManager
 import android.net.Uri
-import android.os.Build
 import android.os.Environment
 import android.os.StatFs
 import androidx.core.content.FileProvider
@@ -21,6 +18,7 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.security.MessageDigest
 import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 
 data class StorageOverview(
@@ -44,7 +42,11 @@ data class StorageAnalysisReport(
     val archivesBytes: Long,
     val othersBytes: Long,
     val duplicateGroups: List<List<FileItem>>,
-    val largeFiles: List<FileItem>
+    val largeFiles: List<FileItem>,
+    val imagesCount: Int = 0,
+    val audioCount: Int = 0,
+    val videosCount: Int = 0,
+    val docsCount: Int = 0
 )
 
 data class InstalledAppItem(
@@ -55,7 +57,10 @@ data class InstalledAppItem(
     val apkSizeBytes: Long,
     val isSystemApp: Boolean,
     val lastUpdateTime: Long
-)
+) {
+    val apkSize: Long
+        get() = apkSizeBytes
+}
 
 object LocalFileRepository {
 
@@ -66,6 +71,12 @@ object LocalFileRepository {
         get() = File(rootStorageDir, ".DosyaYoneticisiPlus_RecycleBin").apply {
             if (!exists()) mkdirs()
         }
+
+    @Volatile
+    var clipboardFiles: List<FileItem> = emptyList()
+
+    @Volatile
+    var clipboardIsMove: Boolean = false
 
     fun getStorageOverview(): StorageOverview {
         return try {
@@ -80,10 +91,12 @@ object LocalFileRepository {
         }
     }
 
+    fun getMainStorageOverview(): StorageOverview = getStorageOverview()
+
     suspend fun listDirectory(
         dir: File,
         showHidden: Boolean = AppSettings.showHiddenFiles,
-        sortBy: Int = 0 // 0: Ad, 1: Boyut, 2: Tarih, 3: Tür
+        sortBy: Int = AppSettings.sortBy
     ): List<FileItem> = withContext(Dispatchers.IO) {
         val rawFiles = dir.listFiles() ?: return@withContext emptyList()
         val items = mutableListOf<FileItem>()
@@ -106,17 +119,20 @@ object LocalFileRepository {
                 )
             )
         }
+        val asc = AppSettings.sortAscending
         items.sortedWith(
             compareByDescending<FileItem> { it.isDirectory }.let { comp ->
                 when (sortBy) {
-                    1 -> comp.thenByDescending { it.size }
-                    2 -> comp.thenByDescending { it.lastModified }
+                    1 -> if (asc) comp.thenBy { it.size } else comp.thenByDescending { it.size }
+                    2 -> if (asc) comp.thenBy { it.lastModified } else comp.thenByDescending { it.lastModified }
                     3 -> comp.thenBy { it.extension }.thenBy { it.name.lowercase() }
-                    else -> comp.thenBy { it.name.lowercase() }
+                    else -> if (asc) comp.thenBy { it.name.lowercase() } else comp.thenByDescending { it.name.lowercase() }
                 }
             }
         )
     }
+
+    suspend fun getCategoryFiles(category: String): List<FileItem> = scanCategoryFiles(category)
 
     suspend fun scanCategoryFiles(category: String): List<FileItem> = withContext(Dispatchers.IO) {
         val results = mutableListOf<FileItem>()
@@ -165,7 +181,7 @@ object LocalFileRepository {
         results.sortedByDescending { it.lastModified }
     }
 
-    suspend fun analyzeStorage(): StorageAnalysisReport = withContext(Dispatchers.IO) {
+    suspend fun analyzeStorage(context: Context? = null): StorageAnalysisReport = withContext(Dispatchers.IO) {
         val overview = getStorageOverview()
         var imgBytes = 0L
         var audBytes = 0L
@@ -173,6 +189,11 @@ object LocalFileRepository {
         var docBytes = 0L
         var arcBytes = 0L
         var othBytes = 0L
+
+        var imgCount = 0
+        var audCount = 0
+        var vidCount = 0
+        var docCount = 0
 
         val sizeMap = HashMap<Long, MutableList<File>>()
         val largeList = mutableListOf<FileItem>()
@@ -188,10 +209,10 @@ object LocalFileRepository {
                     val len = f.length()
                     val item = FileItem(f.absolutePath, f.name, f.absolutePath, false, len, f.lastModified())
                     when {
-                        item.isImageFile() -> imgBytes += len
-                        item.isAudioFile() -> audBytes += len
-                        item.isVideoFile() -> vidBytes += len
-                        item.isDocumentFile() -> docBytes += len
+                        item.isImageFile() -> { imgBytes += len; imgCount++ }
+                        item.isAudioFile() -> { audBytes += len; audCount++ }
+                        item.isVideoFile() -> { vidBytes += len; vidCount++ }
+                        item.isDocumentFile() -> { docBytes += len; docCount++ }
                         item.isArchiveFile() -> arcBytes += len
                         else -> othBytes += len
                     }
@@ -207,7 +228,6 @@ object LocalFileRepository {
 
         walk(rootStorageDir, 0)
 
-        // Yinelenen dosyaları (önce aynı boyut, ardından hızlı kısmi SHA-256) tespit et
         val duplicateGroups = mutableListOf<List<FileItem>>()
         for ((_, sameSizeFiles) in sizeMap) {
             if (sameSizeFiles.size > 1) {
@@ -233,7 +253,11 @@ object LocalFileRepository {
             archivesBytes = arcBytes,
             othersBytes = othBytes,
             duplicateGroups = duplicateGroups.sortedByDescending { it.firstOrNull()?.size ?: 0L },
-            largeFiles = largeList.sortedByDescending { it.size }.take(100)
+            largeFiles = largeList.sortedByDescending { it.size }.take(100),
+            imagesCount = imgCount,
+            audioCount = audCount,
+            videosCount = vidCount,
+            docsCount = docCount
         )
     }
 
@@ -251,32 +275,87 @@ object LocalFileRepository {
         }
     }
 
-    suspend fun getInstalledApps(context: Context, includeSystem: Boolean): List<InstalledAppItem> =
-        withContext(Dispatchers.IO) {
-            val pm = context.packageManager
-            val packages = pm.getInstalledPackages(0)
-            val list = mutableListOf<InstalledAppItem>()
-            for (pkg in packages) {
-                val appInfo = pkg.applicationInfo ?: continue
-                val isSys = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0 &&
-                    (appInfo.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) == 0
-                if (!includeSystem && isSys) continue
-                val label = pm.getApplicationLabel(appInfo).toString()
-                val apkFile = File(appInfo.sourceDir ?: "")
-                val size = if (apkFile.exists()) apkFile.length() else 0L
-                list.add(
-                    InstalledAppItem(
-                        packageName = pkg.packageName,
-                        appName = label,
-                        versionName = pkg.versionName ?: "",
-                        apkPath = appInfo.sourceDir ?: "",
-                        apkSizeBytes = size,
-                        isSystemApp = isSys,
-                        lastUpdateTime = pkg.lastUpdateTime
-                    )
+    suspend fun getInstalledApps(
+        context: Context,
+        includeSystem: Boolean = false,
+        includeSystemApps: Boolean = includeSystem
+    ): List<InstalledAppItem> = withContext(Dispatchers.IO) {
+        val showSys = includeSystem || includeSystemApps
+        val pm = context.packageManager
+        val packages = pm.getInstalledPackages(0)
+        val list = mutableListOf<InstalledAppItem>()
+        for (pkg in packages) {
+            val appInfo = pkg.applicationInfo ?: continue
+            val isSys = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0 &&
+                (appInfo.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) == 0
+            if (!showSys && isSys) continue
+            val label = pm.getApplicationLabel(appInfo).toString()
+            val apkFile = File(appInfo.sourceDir ?: "")
+            val size = if (apkFile.exists()) apkFile.length() else 0L
+            list.add(
+                InstalledAppItem(
+                    packageName = pkg.packageName,
+                    appName = label,
+                    versionName = pkg.versionName ?: "",
+                    apkPath = appInfo.sourceDir ?: "",
+                    apkSizeBytes = size,
+                    isSystemApp = isSys,
+                    lastUpdateTime = pkg.lastUpdateTime
                 )
+            )
+        }
+        list.sortedByDescending { it.apkSizeBytes }
+    }
+
+    fun createNewFolder(parentDir: File, name: String): Boolean {
+        return try {
+            File(parentDir, name).mkdirs()
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    fun createNewFile(parentDir: File, name: String): Boolean {
+        return try {
+            File(parentDir, name).createNewFile()
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    fun renameFile(file: File, newName: String): Boolean {
+        return try {
+            val dest = File(file.parentFile ?: rootStorageDir, newName)
+            file.renameTo(dest)
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    suspend fun pasteClipboardTo(destDir: File): Int = withContext(Dispatchers.IO) {
+        val items = clipboardFiles
+        val move = clipboardIsMove
+        var count = 0
+        for (item in items) {
+            val src = File(item.path)
+            if (src.exists() && copyOrMoveFile(src, destDir, move)) {
+                count++
             }
-            list.sortedByDescending { it.apkSizeBytes }
+        }
+        clipboardFiles = emptyList()
+        count
+    }
+
+    suspend fun deleteFiles(items: List<FileItem>, moveToRecycleBin: Boolean = AppSettings.useRecycleBin): Int =
+        withContext(Dispatchers.IO) {
+            var count = 0
+            for (item in items) {
+                val f = File(item.path)
+                if (f.exists() && deleteFileOrRecycle(f, moveToRecycleBin)) {
+                    count++
+                }
+            }
+            count
         }
 
     suspend fun copyOrMoveFile(src: File, destDir: File, move: Boolean): Boolean = withContext(Dispatchers.IO) {
@@ -333,10 +412,68 @@ object LocalFileRepository {
         }
     }
 
-    /**
-     * Videodaki (00:39 - 00:44) "Şununla aç" (MediaInfo, mpvKt, Nova Video Player, 1DM+, Seal vb.)
-     * diyalog penceresini hem yerel hem bulut dosyaları için başlatır.
-     */
+    suspend fun extractZip(zipFile: File, destDir: File): Boolean = withContext(Dispatchers.IO) {
+        try {
+            if (!destDir.exists()) destDir.mkdirs()
+            ZipInputStream(FileInputStream(zipFile)).use { zis ->
+                val buf = ByteArray(32 * 1024)
+                var entry: ZipEntry? = zis.nextEntry
+                while (entry != null) {
+                    val outFile = File(destDir, entry.name)
+                    if (entry.isDirectory) {
+                        outFile.mkdirs()
+                    } else {
+                        outFile.parentFile?.mkdirs()
+                        FileOutputStream(outFile).use { fos ->
+                            var len: Int
+                            while (zis.read(buf).also { len = it } > 0) {
+                                fos.write(buf, 0, len)
+                            }
+                        }
+                    }
+                    zis.closeEntry()
+                    entry = zis.nextEntry
+                }
+            }
+            true
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    suspend fun computeChecksum(file: File, algorithm: String = "MD5"): String = withContext(Dispatchers.IO) {
+        try {
+            val md = MessageDigest.getInstance(algorithm)
+            FileInputStream(file).use { fis ->
+                val buf = ByteArray(32 * 1024)
+                var len: Int
+                while (fis.read(buf).also { len = it } > 0) {
+                    md.update(buf, 0, len)
+                }
+            }
+            md.digest().joinToString("") { "%02x".format(it) }
+        } catch (_: Throwable) {
+            "-"
+        }
+    }
+
+    fun shareFile(context: Context, item: FileItem) {
+        try {
+            val uri: Uri = if (item.sourceType == FileSourceType.LOCAL) {
+                FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", File(item.path))
+            } else {
+                Uri.parse(item.downloadUrl.ifBlank { item.path })
+            }
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = item.mimeType.ifBlank { "*/*" }
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(Intent.createChooser(intent, "Paylaş"))
+        } catch (_: Throwable) {
+        }
+    }
+
     fun openWithExternalChooser(context: Context, item: FileItem, authToken: String = "") {
         try {
             val mime = when {

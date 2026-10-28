@@ -13,6 +13,9 @@ enum class AppThemeMode(val id: Int, val titleTr: String) {
     DARK(1, "Koyu"),
     AMOLED(2, "AMOLED (Tam Siyah)");
 
+    val displayName: String
+        get() = titleTr
+
     companion object {
         fun fromId(id: Int): AppThemeMode = entries.firstOrNull { it.id == id } ?: LIGHT
     }
@@ -24,7 +27,6 @@ object ThemeManager {
 
     fun getThemeMode(context: Context): AppThemeMode {
         val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
-        // Orijinal Dosya Yöneticisi + 3.6.7 varsayılan olarak Açık (LIGHT) tema ile başlar
         val id = prefs.getInt(KEY_THEME_MODE, AppThemeMode.LIGHT.id)
         return AppThemeMode.fromId(id)
     }
@@ -35,6 +37,10 @@ object ThemeManager {
             .putInt(KEY_THEME_MODE, mode.id)
             .apply()
         applyNightModeFlag(mode)
+    }
+
+    fun applySavedTheme(context: Context) {
+        applyNightModeFlag(getThemeMode(context))
     }
 
     fun applyNightModeFlag(mode: AppThemeMode) {
@@ -55,6 +61,8 @@ object ThemeManager {
         AppThemeMode.DARK -> Color.parseColor("#1E1E1E")
         AppThemeMode.AMOLED -> Color.parseColor("#0A0A0A")
     }
+
+    fun getCardColor(context: Context): Int = getSurfaceColor(context)
 
     fun getToolbarColor(context: Context): Int = when (getThemeMode(context)) {
         AppThemeMode.LIGHT, AppThemeMode.DARK -> Color.parseColor("#212121")
@@ -79,12 +87,6 @@ object ThemeManager {
         AppThemeMode.AMOLED -> Color.parseColor("#161616")
     }
 
-    /**
-     * Orijinal APK'daki bg_desktop_shape.xml:
-     * Açık temada #FFFFFF iç dolgu ve #B8B8B8 1dp çerçeve, 18dp yuvarlatılmış köşe.
-     * Koyu temada #242424 iç dolgu ve #3A3A3A çerçeve.
-     * AMOLED temada #0A0A0A iç dolgu ve #262626 çerçeve.
-     */
     fun createHomeTileSquircle(context: Context): GradientDrawable {
         val density = context.resources.displayMetrics.density
         return GradientDrawable().apply {

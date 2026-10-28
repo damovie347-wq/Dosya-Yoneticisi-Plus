@@ -7,6 +7,9 @@ on:
     branches: [ "**" ]
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build-apk:
     name: Build Signed APK (Android 5.0 - Android 15+)
@@ -27,16 +30,21 @@ jobs:
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Setup Gradle Cache
-        uses: gradle/actions/setup-gradle@v3
-
       - name: Grant Execute Permission for Gradlew
         run: chmod +x gradlew
 
       - name: Generate Release Signing Keystore
         run: |
           if [ ! -f app/personal-release-key.jks ]; then
-            keytool -genkeypair -v               -keystore app/personal-release-key.jks               -alias filemanagerplus               -keyalg RSA               -keysize 2048               -validity 10000               -storepass android123               -keypass android123               -dname "CN=PersonalUse, OU=Mobile, O=Personal, L=Istanbul, S=TR, C=TR"
+            keytool -genkeypair -v \
+              -keystore app/personal-release-key.jks \
+              -alias filemanagerplus \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -storepass android123 \
+              -keypass android123 \
+              -dname "CN=PersonalUse, OU=Mobile, O=Personal, L=Istanbul, S=TR, C=TR"
           fi
 
       - name: Build Signed Release APK

@@ -4,18 +4,15 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.media.ThumbnailUtils
-import android.provider.MediaStore
 import android.util.LruCache
 import android.widget.ImageView
 import kotlinx.coroutines.*
 import java.io.File
 
 object ThumbnailCacheManager {
-    // Maksimum RAM'in sadece 1/10'unu kullanır, RGB_565 ile yarı yarıya bellek tasarrufu sağlar
     private val maxMemory = (Runtime.getRuntime().maxMemory() / 1024).toInt()
     private val cacheSize = (maxMemory / 10).coerceAtLeast(4096)
 
-    // CPU çekirdeklerini yormamak ve ısınmayı önlemek için maksimum 3 iş parçacığı ile sınırlandırılmış havuz
     @OptIn(ExperimentalCoroutinesApi::class)
     private val thumbDispatcher = Dispatchers.IO.limitedParallelism(3)
     private val scope = CoroutineScope(SupervisorJob() + thumbDispatcher)
@@ -25,6 +22,14 @@ object ThumbnailCacheManager {
     }
 
     fun getCached(path: String): Bitmap? = memoryCache.get(path)
+
+    fun loadImageThumbnail(file: File, imageView: ImageView, fallbackRes: Int) {
+        loadThumbnailAsync(file, isVideo = false, imageView = imageView, fallbackRes = fallbackRes)
+    }
+
+    fun loadVideoThumbnail(file: File, imageView: ImageView, fallbackRes: Int) {
+        loadThumbnailAsync(file, isVideo = true, imageView = imageView, fallbackRes = fallbackRes)
+    }
 
     fun loadThumbnailAsync(file: File, isVideo: Boolean, imageView: ImageView, fallbackRes: Int) {
         val key = "${file.absolutePath}_${file.lastModified()}"

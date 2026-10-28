@@ -53,7 +53,8 @@ data class FileItem(
     val providerName: String = "",
     val downloadUrl: String = "",
     val thumbnailUrl: String = "",
-    val parentId: String = ""
+    val parentId: String = "",
+    val sectionHeader: String = ""
 ) : Serializable {
 
     val extension: String
@@ -76,6 +77,12 @@ data class FileItem(
 
     val isApk: Boolean
         get() = extension == "apk" || extension == "apks" || extension == "xapk" || mimeType == "application/vnd.android.package-archive"
+
+    fun isVideoFile(): Boolean = isVideo
+    fun isAudioFile(): Boolean = isAudio
+    fun isImageFile(): Boolean = isImage
+    fun isDocumentFile(): Boolean = isDocument
+    fun isArchiveFile(): Boolean = isArchive
 
     companion object {
         val VIDEO_EXTENSIONS = setOf(
@@ -142,5 +149,9 @@ data class RemoteAccount(
     val password: String = "",
     val initialPath: String = "/",
     val displayName: String = host,
-    val isAnonymous: Boolean = false
-) : Serializable
+    val anonymous: Boolean = false,
+    val ftps: Boolean = (protocol == RemoteProtocolType.FTPS)
+) : Serializable {
+    val isAnonymous: Boolean
+        get() = anonymous
+}

@@ -28,6 +28,8 @@ object RemoteManager {
     private const val KEY_REMOTE_ACCOUNTS = "saved_remote_accounts_v2"
     private val gson = Gson()
 
+    fun getAccounts(context: Context): List<RemoteAccount> = getRemoteAccounts(context)
+
     fun getRemoteAccounts(context: Context): List<RemoteAccount> {
         val raw = context.getSharedPreferences(PREF_REMOTE, Context.MODE_PRIVATE)
             .getString(KEY_REMOTE_ACCOUNTS, null) ?: return emptyList()
@@ -61,7 +63,7 @@ object RemoteManager {
         withContext(Dispatchers.IO) {
             try {
                 when (account.protocol) {
-                    RemoteProtocolType.FTP -> listFtp(account, remotePath)
+                    RemoteProtocolType.FTP, RemoteProtocolType.FTPS -> listFtp(account, remotePath)
                     RemoteProtocolType.SFTP -> listSftp(account, remotePath)
                     RemoteProtocolType.WEBDAV -> listWebDav(account, remotePath)
                     RemoteProtocolType.SMB, RemoteProtocolType.LAN -> listSmbOrLan(account, remotePath)
@@ -72,7 +74,7 @@ object RemoteManager {
         }
 
     private fun listFtp(account: RemoteAccount, path: String): List<FileItem> {
-        val client = if (account.ftps) FTPSClient() else FTPClient()
+        val client = if (account.ftps || account.protocol == RemoteProtocolType.FTPS) FTPSClient() else FTPClient()
         try {
             client.connectTimeout = 10_000
             client.connect(account.host, account.port)
@@ -191,7 +193,6 @@ object RemoteManager {
     }
 
     private fun listSmbOrLan(account: RemoteAccount, path: String): List<FileItem> {
-        // SMB port 445 bağlantısını doğrula ve paylaşılan dizinleri listele
         val reachable = try {
             Socket().use { s ->
                 s.connect(InetSocketAddress(account.host, account.port), 4000)
