@@ -146,21 +146,33 @@ class NetworkAccessActivity : AppCompatActivity() {
     }
 
     private fun updateServerUi(running: Boolean, port: Int = 7552) {
+        val isDark = ThemeManager.isDarkOrAmoled(this)
         if (running) {
-            binding.llFtpSetupForm.visibility = View.GONE
-            binding.llFtpActivePanel.visibility = View.VISIBLE
-            val ip = FtpServerService.getLocalWifiIpAddress()
-            binding.tvFtpActiveUrl.text = "ftp://$ip:$port"
-            binding.tvFtpActiveUser.text = "pc"
+            val ip = FtpServerService.getLocalIpAddress()
             val pass = binding.etFtpPassword.text?.toString().orEmpty()
-            binding.tvFtpActivePassword.text = if (pass.isEmpty()) "(yok)" else pass
-            binding.btnToggleFtpServer.text = getString(R.string.stop_service)
-            binding.btnToggleFtpServer.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#E65100"))
+            binding.llFtpSetupForm.visibility = View.GONE
+            binding.llFtpRunningInfo.visibility = View.VISIBLE
+
+            binding.tvFtpUrlBox.text = "ftp://$ip:$port"
+            binding.tvFtpRunningUser.text = "pc"
+            binding.tvFtpRunningPass.text = pass.ifEmpty { "(Yok)" }
+
+            binding.tvFtpStatusInfo.text = "Yukarıdaki adresi PC'de bir dosya gezginine yazın."
+            binding.btnToggleFtpServer.text = "HİZMETİ DURDUR"
+            binding.btnToggleFtpServer.backgroundTintList = ColorStateList.valueOf(
+                if (isDark) Color.parseColor("#333333") else Color.parseColor("#E0E0E0")
+            )
+            binding.btnToggleFtpServer.setTextColor(
+                if (isDark) Color.WHITE else Color.parseColor("#212121")
+            )
         } else {
             binding.llFtpSetupForm.visibility = View.VISIBLE
-            binding.llFtpActivePanel.visibility = View.GONE
-            binding.btnToggleFtpServer.text = getString(R.string.start_service)
+            binding.llFtpRunningInfo.visibility = View.GONE
+
+            binding.tvFtpStatusInfo.text = "Başka bir cihazdan dosyalara erişmek için hizmeti başlatın."
+            binding.btnToggleFtpServer.text = "BAŞLAT"
             binding.btnToggleFtpServer.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#008578"))
+            binding.btnToggleFtpServer.setTextColor(Color.WHITE)
         }
     }
 }
