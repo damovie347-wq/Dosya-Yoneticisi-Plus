@@ -60,4 +60,5 @@
     <string name="perm_title">Tüm Dosyalara Erişim İzni</string>
     <string name="perm_desc">Dosya Yöneticisi + uygulamasının cihazınızdaki tüm klasörleri hızlıca yönetebilmesi için depolama izni verin.</string>
     <string name="perm_grant">İzin Ver</string>
+    <string name="action_paste">YAPIŞTIR</string>
 </resources>

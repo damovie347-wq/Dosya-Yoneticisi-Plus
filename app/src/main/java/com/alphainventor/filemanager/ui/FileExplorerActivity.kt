@@ -16,6 +16,10 @@ import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.PopupMenu
+import android.widget.PopupWindow
+import java.text.NumberFormat
+import java.text.SimpleDateFormat
+import java.util.Date
 import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.ScrollView
@@ -77,6 +81,7 @@ class FileExplorerActivity : AppCompatActivity() {
     private data class CloudCrumb(val id: String, val name: String)
     private val cloudNavStack = Stack<CloudCrumb>()
     private var fullCurrentItems: List<FileItem> = emptyList()
+    private var pendingExtractZipItem: FileItem? = null
 
     private val driveConsentLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -413,53 +418,25 @@ class FileExplorerActivity : AppCompatActivity() {
         binding.btnActionMore.setOnClickListener { view ->
             val selected = adapter.getSelectedItems()
             if (selected.isEmpty()) return@setOnClickListener
-            val first = selected.first()
-            val popup = PopupMenu(this, view)
-            popup.menu.add(0, 1, 0, getString(R.string.action_share))
-            popup.menu.add(0, 2, 1, getString(R.string.action_bookmark))
-            popup.menu.add(0, 3, 2, getString(R.string.action_open_with))
-            popup.menu.add(0, 4, 3, getString(R.string.action_properties))
-            popup.menu.add(0, 5, 4, getString(R.string.settings_title))
-            if (mode == "LOCAL") {
-                popup.menu.add(0, 6, 5, getString(R.string.action_compress))
-                if (first.extension == "zip") {
-                    popup.menu.add(0, 7, 6, getString(R.string.action_extract))
-                }
-            }
-            popup.setOnMenuItemClickListener { item ->
-                when (item.itemId) {
-                    1 -> LocalFileRepository.shareFile(this, first)
-                    2 -> {
-                        LocalFileRepository.addBookmark(this, first)
-                        Toast.makeText(this, "Yer imlerine eklendi: ${first.name}", Toast.LENGTH_SHORT).show()
-                        adapter.clearSelection()
-                        updateSelectionUi()
-                    }
-                    3 -> {
-                        LocalFileRepository.openWithExternalChooser(
-                            this,
-                            first,
-                            cloudAccount?.accessToken ?: ""
-                        )
-                        adapter.clearSelection()
-                        updateSelectionUi()
-                    }
-                    4 -> showPropertiesDialog(first)
-                    5 -> startActivity(Intent(this, SettingsActivity::class.java))
-                    6 -> showCompressZipDialog(selected)
-                    7 -> extractZipHere(first)
-                }
-                true
-            }
-            popup.show()
+            showOriginalBottomMorePopup(view, selected)
         }
 
         binding.btnCancelPaste.setOnClickListener {
             LocalFileRepository.clipboardFiles = emptyList()
+            pendingExtractZipItem = null
+            binding.btnConfirmPaste.text = getString(R.string.action_paste)
             binding.pasteActionBar.visibility = View.GONE
         }
 
         binding.btnConfirmPaste.setOnClickListener {
+            val zipToExtract = pendingExtractZipItem
+            if (zipToExtract != null && mode == "LOCAL") {
+                pendingExtractZipItem = null
+                binding.btnConfirmPaste.text = getString(R.string.action_paste)
+                binding.pasteActionBar.visibility = View.GONE
+                extractZipToDirectory(zipToExtract, File(currentPath))
+                return@setOnClickListener
+            }
             if (mode == "LOCAL") {
                 lifecycleScope.launch {
                     binding.pbLoadingFiles.visibility = View.VISIBLE
@@ -847,6 +824,14 @@ class FileExplorerActivity : AppCompatActivity() {
                         driveConsentLauncher.launch(recovery)
                         return@launch
                     }
+                    if (files.isEmpty() && CloudManager.needsWebOAuthFallbackForAccount != null) {
+                        binding.pbLoadingFiles.visibility = View.GONE
+                        startActivity(Intent(this@FileExplorerActivity, CloudAccountsActivity::class.java).apply {
+                            putExtra("AUTO_AUTH_ACCOUNT_ID", acc.id)
+                        })
+                        finish()
+                        return@launch
+                    }
                     val refreshedAcc = CloudManager.getAccounts(this@FileExplorerActivity).firstOrNull { it.id == acc.id }
                     if (refreshedAcc != null) {
                         cloudAccount = refreshedAcc
@@ -1064,14 +1049,26 @@ class FileExplorerActivity : AppCompatActivity() {
                     }
                 }
                 item.isImage -> {
-                    if (AppSettings.useInternalImageViewer && item.sourceType == FileSourceType.LOCAL) {
+                    if (AppSettings.useInternalImageViewer) {
+                        val siblingImages = fullCurrentItems.filter { !it.isDirectory && it.isImage }
+                        val siblingPaths = ArrayList(siblingImages.map { if (it.sourceType == FileSourceType.CLOUD) it.downloadUrl else it.path })
+                        val siblingTitles = ArrayList(siblingImages.map { it.name })
+                        val curIdx = siblingImages.indexOfFirst { it.id == item.id }.coerceAtLeast(0)
+
                         startActivity(Intent(this@FileExplorerActivity, ImageViewerActivity::class.java).apply {
-                            putExtra("IMAGE_PATH", item.path)
+                            putExtra("IMAGE_PATH", if (item.sourceType == FileSourceType.CLOUD) item.downloadUrl else item.path)
                             putExtra("IMAGE_TITLE", item.name)
+                            putExtra("AUTH_TOKEN", activeToken)
+                            putStringArrayListExtra("IMAGE_LIST_PATHS", siblingPaths)
+                            putStringArrayListExtra("IMAGE_LIST_TITLES", siblingTitles)
+                            putExtra("IMAGE_INDEX", curIdx)
                         })
                     } else {
                         LocalFileRepository.openWithExternalChooser(this@FileExplorerActivity, item, activeToken)
                     }
+                }
+                (item.extension.equals("zip", ignoreCase = true) && item.sourceType == FileSourceType.LOCAL) -> {
+                    showOriginalZipExtractDialog(item)
                 }
                 (item.extension in setOf("txt", "md", "json", "xml", "log", "ini", "csv", "html") && AppSettings.useInternalTextEditor && item.sourceType == FileSourceType.LOCAL) -> {
                     startActivity(Intent(this@FileExplorerActivity, TextEditorActivity::class.java).apply {
@@ -1299,43 +1296,373 @@ class FileExplorerActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun extractZipHere(item: FileItem) {
-        val destDir = File(currentPath, item.name.substringBeforeLast('.'))
+    /**
+     * Orijinal APK Sağ Alt "Daha fazla" İkonlu İşlem Paneli (Video 5 00:04 - 00:12):
+     * - Paylaş
+     * - Yer İmi Ekle
+     * - Çıkart (ZIP seçiliyse doğrudan 3 seçenekli orijinal çıkartma diyaloğunu açar!)
+     * - Sıkıştır (Normal dosya/klasör seçiliyse)
+     * - Şununla aç
+     * - Özellikler (MD5/SHA-1 HESAPLAMAK butonlu orijinal özellikler penceresi)
+     * - Ayarlar
+     */
+    private fun showOriginalBottomMorePopup(anchor: View, selected: List<FileItem>) {
+        val first = selected.first()
+        val density = resources.displayMetrics.density
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor("#303030"))
+            val vPad = (6 * density).toInt()
+            setPadding(0, vPad, 0, vPad)
+            elevation = 10f * density
+        }
+
+        var popupWindow: PopupWindow? = null
+
+        fun addRow(iconRes: Int, label: String, onClick: () -> Unit) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                layoutParams = LinearLayout.LayoutParams(
+                    (210 * density).toInt(),
+                    (46 * density).toInt()
+                )
+                val hPad = (16 * density).toInt()
+                setPadding(hPad, 0, hPad, 0)
+                setBackgroundResource(android.R.drawable.list_selector_background)
+                isClickable = true
+                isFocusable = true
+                setOnClickListener {
+                    popupWindow?.dismiss()
+                    onClick()
+                }
+            }
+            val iv = ImageView(this).apply {
+                val sz = (22 * density).toInt()
+                layoutParams = LinearLayout.LayoutParams(sz, sz).apply {
+                    marginEnd = (14 * density).toInt()
+                }
+                setImageResource(iconRes)
+                setColorFilter(Color.WHITE)
+            }
+            val tv = TextView(this).apply {
+                text = label
+                textSize = 15f
+                setTextColor(Color.WHITE)
+                isSingleLine = true
+            }
+            row.addView(iv)
+            row.addView(tv)
+            container.addView(row)
+        }
+
+        addRow(R.drawable.ic_menu_share, "Paylaş") {
+            LocalFileRepository.shareFile(this, first)
+            adapter.clearSelection()
+            updateSelectionUi()
+        }
+
+        addRow(R.drawable.ic_drawer_bookmarks, "Yer İmi Ekle") {
+            LocalFileRepository.addBookmark(this, first)
+            Toast.makeText(this, "Yer imlerine eklendi: ${first.name}", Toast.LENGTH_SHORT).show()
+            adapter.clearSelection()
+            updateSelectionUi()
+        }
+
+        if (mode in setOf("LOCAL", "CATEGORY")) {
+            if (selected.size == 1 && first.extension.equals("zip", ignoreCase = true)) {
+                addRow(R.drawable.ic_archive_zip, "Çıkart") {
+                    adapter.clearSelection()
+                    updateSelectionUi()
+                    showOriginalZipExtractDialog(first)
+                }
+            } else {
+                addRow(R.drawable.ic_archive_zip, "Sıkıştır") {
+                    showCompressZipDialog(selected)
+                }
+            }
+        }
+
+        addRow(R.drawable.ic_menu_share, "Şununla aç") {
+            LocalFileRepository.openWithExternalChooser(
+                this,
+                first,
+                cloudAccount?.accessToken ?: ""
+            )
+            adapter.clearSelection()
+            updateSelectionUi()
+        }
+
+        addRow(R.drawable.ic_menu_info, "Özellikler") {
+            adapter.clearSelection()
+            updateSelectionUi()
+            showPropertiesDialog(first)
+        }
+
+        addRow(R.drawable.ic_menu_settings, "Ayarlar") {
+            adapter.clearSelection()
+            updateSelectionUi()
+            startActivity(Intent(this, SettingsActivity::class.java))
+        }
+
+        container.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
+        val popupHeight = container.measuredHeight
+        val popupWidth = (210 * density).toInt()
+
+        popupWindow = PopupWindow(
+            container,
+            popupWidth,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            true
+        ).apply {
+            isOutsideTouchable = true
+            elevation = 12f * density
+        }
+
+        val loc = IntArray(2)
+        anchor.getLocationOnScreen(loc)
+        val xPos = (resources.displayMetrics.widthPixels - popupWidth - (8 * density).toInt()).coerceAtLeast(0)
+        val yPos = (loc[1] - popupHeight - (4 * density).toInt()).coerceAtLeast((60 * density).toInt())
+        popupWindow.showAtLocation(binding.explorerRoot, Gravity.NO_GRAVITY, xPos, yPos)
+    }
+
+    /**
+     * Orijinal APK ZIP Çıkartma Diyaloğu (Video 5 00:13 - 00:14):
+     * Başlık: Dosya-Yoneticisi-Plus-v3.6.7-APK.zip
+     * 1) Buraya Çıkart
+     * 2) Klasöre çıkart Dosya-Yoneticisi-Plus-v3.6.7-APK/
+     * 3) Dosyaları çıkart... (Hedef klasör seçme çubuğunu açar)
+     */
+    private fun showOriginalZipExtractDialog(item: FileItem) {
+        val baseFolderName = item.name.substringBeforeLast('.').ifBlank { "${item.name}_cikartilan" }
+        val parentDir = File(item.path).parentFile ?: File(currentPath)
+        val options = arrayOf(
+            "Buraya Çıkart",
+            "Klasöre çıkart $baseFolderName/",
+            "Dosyaları çıkart..."
+        )
+
+        AlertDialog.Builder(this)
+            .setTitle(item.name)
+            .setItems(options) { dialog, which ->
+                dialog.dismiss()
+                when (which) {
+                    0 -> extractZipToDirectory(item, parentDir)
+                    1 -> extractZipToDirectory(item, File(parentDir, baseFolderName))
+                    2 -> {
+                        pendingExtractZipItem = item
+                        LocalFileRepository.clipboardFiles = emptyList()
+                        if (mode == "CATEGORY") {
+                            mode = "LOCAL"
+                            currentPath = parentDir.absolutePath
+                            loadCurrentDirectory(forceRefresh = false)
+                        }
+                        binding.tvClipboardStatus.text = "Çıkartılacak: ${item.name}"
+                        binding.btnConfirmPaste.text = "BURAYA ÇIKART"
+                        binding.pasteActionBar.visibility = View.VISIBLE
+                        Toast.makeText(
+                            this,
+                            "Çıkartmak istediğiniz klasöre gidip alttaki 'BURAYA ÇIKART' butonuna dokunun.",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
+            }
+            .show()
+    }
+
+    private fun extractZipToDirectory(item: FileItem, destDir: File) {
         lifecycleScope.launch {
             binding.pbLoadingFiles.visibility = View.VISIBLE
             val ok = LocalFileRepository.extractZip(File(item.path), destDir)
             binding.pbLoadingFiles.visibility = View.GONE
             adapter.clearSelection()
             updateSelectionUi()
-            if (ok) loadCurrentDirectory(forceRefresh = true)
+            if (ok) {
+                Toast.makeText(
+                    this@FileExplorerActivity,
+                    "✓ Çıkartıldı: ${destDir.name}",
+                    Toast.LENGTH_SHORT
+                ).show()
+                loadCurrentDirectory(forceRefresh = true)
+            } else {
+                Toast.makeText(
+                    this@FileExplorerActivity,
+                    "Arşiv çıkartılırken hata oluştu.",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
         }
     }
 
+    /**
+     * Orijinal APK Özellikler Diyaloğu (Video 5 00:05):
+     * - Türü, Boyut (detaylı bayt ile), Değiştirilmiş, Yol, İzinler
+     * - Sağlama toplamları: [ HESAPLAMAK ] butonu (MD5 & SHA-1 hesaplar)
+     */
     private fun showPropertiesDialog(item: FileItem) {
-        lifecycleScope.launch {
-            val checksumInfo = if (!item.isDirectory && item.sourceType == FileSourceType.LOCAL) {
-                val f = File(item.path)
-                val md5 = LocalFileRepository.computeChecksum(f, "MD5")
-                "\nMD5: $md5"
-            } else ""
+        val density = resources.displayMetrics.density
+        val primaryColor = ThemeManager.getPrimaryTextColor(this)
+        val secondaryColor = ThemeManager.getSecondaryTextColor(this)
+        val cardColor = ThemeManager.getCardColor(this)
 
-            val accountLine = if (item.accountEmailOrLabel.isNotBlank()) {
-                "\nBulut Hesabı: ${item.providerName} (${item.accountEmailOrLabel})"
-            } else ""
-
-            AlertDialog.Builder(this@FileExplorerActivity)
-                .setTitle(getString(R.string.action_properties))
-                .setMessage(
-                    "Ad: ${item.name}\n" +
-                        "Konum: ${item.path}\n" +
-                        "Tür: ${if (item.isDirectory) "Klasör" else item.mimeType.ifBlank { item.extension }}\n" +
-                        "Boyut: ${FormatUtils.formatSizeDetailed(item.size)}\n" +
-                        "Değiştirilme: ${FormatUtils.formatSectionDate(item.lastModified)}" +
-                        accountLine + checksumInfo
-                )
-                .setPositiveButton("TAMAM", null)
-                .show()
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val pH = (22 * density).toInt()
+            val pV = (18 * density).toInt()
+            setPadding(pH, pV, pH, (8 * density).toInt())
+            setBackgroundColor(cardColor)
         }
+
+        // Başlık Satırı (Dosya İkonu + Dosya Adı)
+        val titleRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = (14 * density).toInt()
+            }
+        }
+
+        val ivIcon = ImageView(this).apply {
+            val sz = (28 * density).toInt()
+            layoutParams = LinearLayout.LayoutParams(sz, sz).apply {
+                marginEnd = (12 * density).toInt()
+            }
+            val iconRes = when {
+                item.isDirectory -> R.drawable.ic_folder_orange
+                item.isArchive -> R.drawable.ic_archive_zip
+                item.isVideo -> R.drawable.ic_cat_videos
+                item.isImage -> R.drawable.ic_cat_images
+                item.isAudio -> R.drawable.ic_cat_audio
+                item.isApk -> R.drawable.ic_cat_apps
+                else -> R.drawable.ic_cat_docs
+            }
+            setImageResource(iconRes)
+        }
+
+        val tvHeaderTitle = TextView(this).apply {
+            text = item.name
+            textSize = 16.5f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(primaryColor)
+        }
+
+        titleRow.addView(ivIcon)
+        titleRow.addView(tvHeaderTitle)
+        root.addView(titleRow)
+
+        fun addPropertyRow(label: String, value: String) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    bottomMargin = (8 * density).toInt()
+                }
+            }
+            val tvLabel = TextView(this).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    (130 * density).toInt(),
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+                text = label
+                textSize = 13.5f
+                setTextColor(secondaryColor)
+            }
+            val tvVal = TextView(this).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    1f
+                )
+                text = value
+                textSize = 13.5f
+                setTextColor(primaryColor)
+            }
+            row.addView(tvLabel)
+            row.addView(tvVal)
+            root.addView(row)
+        }
+
+        val exactBytes = NumberFormat.getIntegerInstance(Locale("tr", "TR")).format(item.size)
+        val sdf = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale("tr", "TR"))
+        val f = File(item.path)
+        val perms = if (item.sourceType == FileSourceType.LOCAL && f.exists()) {
+            buildString {
+                if (f.canRead()) append("Okuma ")
+                if (f.canWrite()) append("Yazma")
+            }.trim().ifEmpty { "Okuma" }
+        } else "Okuma Yazma"
+
+        addPropertyRow("Türü", if (item.isDirectory) "Klasör" else "Dosya")
+        addPropertyRow("Boyut", "${FormatUtils.formatSize(item.size)}\n($exactBytes bayt)")
+        addPropertyRow("Değiştirilmiş", sdf.format(Date(item.lastModified)))
+        addPropertyRow("Yol", item.path)
+        addPropertyRow("İzinler", perms)
+
+        if (item.accountEmailOrLabel.isNotBlank()) {
+            addPropertyRow("Bulut Hesabı", "${item.providerName} (${item.accountEmailOrLabel})")
+        }
+
+        if (!item.isDirectory && item.sourceType == FileSourceType.LOCAL && f.exists()) {
+            val checksumRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    topMargin = (4 * density).toInt()
+                }
+            }
+            val tvChecksumLabel = TextView(this).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    (130 * density).toInt(),
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+                text = "Sağlama toplamları"
+                textSize = 13.5f
+                setTextColor(secondaryColor)
+            }
+            val checksumValueContainer = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            val btnCalculate = android.widget.Button(this).apply {
+                text = "HESAPLAMAK"
+                textSize = 12.5f
+                setTextColor(primaryColor)
+                setOnClickListener {
+                    isEnabled = false
+                    text = "Hesaplanıyor..."
+                    lifecycleScope.launch {
+                        val md5 = LocalFileRepository.computeChecksum(f, "MD5")
+                        val sha1 = LocalFileRepository.computeChecksum(f, "SHA-1")
+                        checksumValueContainer.removeAllViews()
+                        val tvHashes = TextView(this@FileExplorerActivity).apply {
+                            text = "MD5: $md5\nSHA1: $sha1"
+                            textSize = 12.5f
+                            setTextColor(primaryColor)
+                            setTextIsSelectable(true)
+                        }
+                        checksumValueContainer.addView(tvHashes)
+                    }
+                }
+            }
+            checksumValueContainer.addView(btnCalculate)
+            checksumRow.addView(tvChecksumLabel)
+            checksumRow.addView(checksumValueContainer)
+            root.addView(checksumRow)
+        }
+
+        AlertDialog.Builder(this)
+            .setView(root)
+            .setPositiveButton("TAMAM", null)
+            .show()
     }
 
     private fun handleBackNavigation() {

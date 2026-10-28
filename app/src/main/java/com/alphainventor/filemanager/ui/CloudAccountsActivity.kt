@@ -6,27 +6,35 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
+import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
+import android.os.SystemClock
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
+import android.webkit.CookieManager
+import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.GridLayout
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.PopupMenu
+import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -47,6 +55,7 @@ import com.alphainventor.filemanager.theme.ThemeManager
 import com.alphainventor.filemanager.ui.adapter.CloudAccountsAdapter
 import com.alphainventor.filemanager.ui.adapter.FileListAdapter
 import com.alphainventor.filemanager.util.AppSettings
+import com.alphainventor.filemanager.viewer.ImageViewerActivity
 import com.alphainventor.filemanager.viewer.MusicPlayerActivity
 import com.alphainventor.filemanager.viewer.VideoPlayerActivity
 import kotlinx.coroutines.Dispatchers
@@ -61,14 +70,15 @@ import java.net.URLEncoder
 import java.util.UUID
 
 /**
- * Orijinal Dosya Yöneticisi + 3.6.7 Bulut Ekranı (Google Play Hizmetleri Hesap Seçici + Mavi Barlı Toplu Bulut Arama):
- * 1) "+ Bir bulut konumu ekle -> Google Drive" tıklandığında orijinal APK'daki (r$c->n) gibi doğrudan
- *    Google Play Hizmetleri Sistem Hesap Seçicisini (com.google.android.gms.common.account.CHOOSE_ACCOUNT) açar!
- * 2) Cihazda açık olan Google hesaplarından biri seçildiğinde hesabı anında Bulut listesine ve sol çekmeceye ekler.
- * 3) Play Hizmetleri (GoogleAuthUtil) token verir veya UserRecoverableAuthException izin penceresini açar;
- *    eğer özel GitHub derleme imzası nedeniyle Play Hizmetleri token vermezse, seçilen e-posta (login_hint) ile
- *    tek dokunuşlu OAuth onayını tamamlar.
- * 4) Sağ üstteki BÜYÜTEÇ (🔍) ikonuna basınca tüm bağlı Google Drive ve bulut hesaplarında paralel arama yapar.
+ * Orijinal Dosya Yöneticisi + 3.6.7 Bulut Ekranı:
+ * 1) "+ Bir bulut konumu ekle -> Google Drive" tıklandığında doğrudan Google Play Hizmetleri
+ *    Sistem Hesap Seçicisini (com.google.android.gms.common.account.CHOOSE_ACCOUNT) açar.
+ * 2) Seçilen Google hesabı için:
+ *    - Önce Play Hizmetleri (GoogleAuthUtil / AccountManager) doğrudan token ve izin penceresini dener.
+ *    - Özel derleme imzası nedeniyle Play Hizmetleri doğrudan token vermezse, Android AccountManager
+ *      "weblogin:service=gaia&continue=..." (MergeSession) köprüsüyle cihazdaki açık Google oturumunu
+ *      otomatik bağlar ve gerçek dokunma olayı (MotionEvent, isTrusted=true) ile onay adımlarını otomatik geçer.
+ * 3) Sağ üstteki BÜYÜTEÇ (🔍) ikonuna basınca tüm bağlı Google Drive ve bulut hesaplarında paralel arama yapar.
  */
 class CloudAccountsActivity : AppCompatActivity() {
 
@@ -85,10 +95,6 @@ class CloudAccountsActivity : AppCompatActivity() {
     private var searchUiState: Int = 0
     private var searchHistoryContainer: LinearLayout? = null
 
-    /**
-     * Orijinal Google Play Hizmetleri Hesap Seçicisi (com.google.android.gms.common.account.CHOOSE_ACCOUNT)
-     * Cihazda oturum açılmış tüm Google hesaplarını listeler.
-     */
     private val googleAccountPickerLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -100,9 +106,6 @@ class CloudAccountsActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Google Play Hizmetleri OAuth İzin Penceresi (UserRecoverableAuthException)
-     */
     private val googlePlayConsentLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -116,6 +119,8 @@ class CloudAccountsActivity : AppCompatActivity() {
                     launchExplorerForAccount(
                         CloudManager.getAccounts(this@CloudAccountsActivity).firstOrNull { it.id == acc.id } ?: acc
                     )
+                } else {
+                    startGoogleDriveOAuthFlow(existingAccount = acc, autoOpenWhenConnected = true)
                 }
             }
         }
@@ -133,6 +138,14 @@ class CloudAccountsActivity : AppCompatActivity() {
 
         if (intent.getBooleanExtra("FOCUS_UNIFIED_SEARCH", false)) {
             openSearchTypingState()
+        }
+
+        val autoAuthAccountId = intent.getStringExtra("AUTO_AUTH_ACCOUNT_ID")
+        if (!autoAuthAccountId.isNullOrBlank()) {
+            val acc = CloudManager.getAccounts(this).firstOrNull { it.id == autoAuthAccountId }
+            if (acc != null) {
+                openCloudAccountExplorer(acc)
+            }
         }
     }
 
@@ -195,10 +208,6 @@ class CloudAccountsActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Orijinal APK'daki (Lcom/alphainventor/filemanager/file/r$c;->n) Google Play Hizmetleri Hesap Seçicisi:
-     * Telefonda açık olan tüm Google hesaplarını yerel sistem penceresinde açar!
-     */
     private fun launchNativeGoogleAccountPicker(preselectedEmail: String? = null) {
         try {
             val gmsIntent = Intent("com.google.android.gms.common.account.CHOOSE_ACCOUNT").apply {
@@ -230,18 +239,10 @@ class CloudAccountsActivity : AppCompatActivity() {
             )
             googleAccountPickerLauncher.launch(fallbackIntent)
         } catch (_: Throwable) {
-            startGoogleDriveOAuthFlow(existingAccount = null)
+            startGoogleDriveOAuthFlow(existingAccount = null, autoOpenWhenConnected = true)
         }
     }
 
-    /**
-     * Kullanıcı Play Hizmetleri penceresinden bir Google hesabı (örn: damovie355@gmail.com) seçtiğinde:
-     * 1) Hesabı anında Bulut ekranına kaydeder (orijinal r$c->k davranışı).
-     * 2) Play Hizmetleri üzerinden (GoogleAuthUtil) token almayı dener.
-     * 3) Eğer Play Hizmetleri UserRecoverableAuthException döndürürse orijinal izin penceresini açar.
-     * 4) Eğer özel GitHub imzası nedeniyle Play Hizmetleri UNREGISTERED_ON_API_CONSOLE döndürürse,
-     *    seçilen e-posta adresiyle (login_hint) tek dokunuşlu OAuth onayını başlatır.
-     */
     private fun onGoogleAccountPickedFromPlayServices(email: String) {
         val existing = CloudManager.getAccounts(this).firstOrNull {
             it.provider == CloudProviderType.GOOGLE_DRIVE && it.emailOrName.equals(email, ignoreCase = true)
@@ -264,11 +265,12 @@ class CloudAccountsActivity : AppCompatActivity() {
                 return@launch
             }
             if (token.isNotBlank()) {
-                CloudManager.fetchGoogleDriveQuota(this@CloudAccountsActivity, savedAccount.copy(accessToken = token))
+                val updated = CloudManager.fetchGoogleDriveQuota(this@CloudAccountsActivity, savedAccount.copy(accessToken = token))
                 refreshAccountsList()
-                Toast.makeText(this@CloudAccountsActivity, "✓ Google Drive eklendi: $email", Toast.LENGTH_SHORT).show()
-            } else if (CloudManager.needsWebOAuthFallbackForAccount != null) {
-                startGoogleDriveOAuthFlow(existingAccount = savedAccount)
+                Toast.makeText(this@CloudAccountsActivity, "✓ Google Drive bağlandı: $email", Toast.LENGTH_SHORT).show()
+                launchExplorerForAccount(updated)
+            } else {
+                startGoogleDriveOAuthFlow(existingAccount = savedAccount, autoOpenWhenConnected = true)
             }
         }
     }
@@ -462,7 +464,7 @@ class CloudAccountsActivity : AppCompatActivity() {
                     return@launch
                 }
                 if (token.isBlank() || CloudManager.needsWebOAuthFallbackForAccount != null) {
-                    startGoogleDriveOAuthFlow(existingAccount = account)
+                    startGoogleDriveOAuthFlow(existingAccount = account, autoOpenWhenConnected = true)
                     return@launch
                 }
             }
@@ -680,6 +682,13 @@ class CloudAccountsActivity : AppCompatActivity() {
                         putExtra("AUTH_TOKEN", activeToken)
                     })
                 }
+                item.isImage -> {
+                    startActivity(Intent(this@CloudAccountsActivity, ImageViewerActivity::class.java).apply {
+                        putExtra("IMAGE_PATH", item.downloadUrl.ifBlank { item.path })
+                        putExtra("IMAGE_TITLE", item.name)
+                        putExtra("AUTH_TOKEN", activeToken)
+                    })
+                }
                 else -> {
                     LocalFileRepository.openWithExternalChooser(this@CloudAccountsActivity, item, activeToken)
                 }
@@ -687,10 +696,6 @@ class CloudAccountsActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Orijinal APK "Yeni bulut bağlantısı" 3 sütunlu seçim diyaloğu:
-     * Google Drive tıklandığında DOĞRUDAN Play Hizmetleri Sistem Hesap Seçicisi açılır!
-     */
     private fun showAddCloudProviderDialog() {
         val providers = listOf(
             CloudProviderType.GOOGLE_DRIVE to R.drawable.cloud_icon_googledrive,
@@ -746,7 +751,6 @@ class CloudAccountsActivity : AppCompatActivity() {
                 setOnClickListener {
                     dialog.dismiss()
                     if (type == CloudProviderType.GOOGLE_DRIVE) {
-                        // Doğrudan cihazdaki Google Play Hizmetleri hesap seçicisini aç!
                         launchNativeGoogleAccountPicker()
                     } else {
                         showAddCloudCredentialsDialog(type)
@@ -760,13 +764,17 @@ class CloudAccountsActivity : AppCompatActivity() {
     }
 
     /**
-     * Play Hizmetleri'nin özel APK imzası nedeniyle doğrudan token vermediği durumlarda
-     * seçilen Google hesabını (login_hint=email) tek dokunuşla yetkilendiren OAuth 2.0 akışı.
-     * - Sayfa içindeki üçüncü taraf istemci adını ("rclone") otomatik olarak "Dosya Yöneticisi +" yapar.
-     * - Kullanıcı cihaz tarayıcısında zaten oturum açmış olduğu için "Tarayıcıda Tek Tıkla Onayla" ile şifre yazmadan bağlanır.
+     * Cihazdaki açık Google hesabını (MergeSession weblogin köprüsü + gerçek MotionEvent otomatik tıklayıcı)
+     * kullanarak Google Drive OAuth 2.0 yetkilendirmesini tamamlar:
+     * 1) Önce Android AccountManager/GoogleAuthUtil "weblogin:service=gaia&continue=..." ile MergeSession URL'sini alır.
+     *    Böylece WebView hiçbir şifre sormadan doğrudan seçilen Google hesabına (örn. damovie338@gmail.com) giriş yapar!
+     * 2) Sayfa görünür olmadan önce (alpha=0f) üçüncü taraf istemci ikonunu ve adını ("rclone") tamamen kaldırıp
+     *    resmi Google Drive üçgen logosu ve "Dosya Yöneticisi +" başlığıyla değiştirir.
+     * 3) Hesap seçimi, "Sonraki", "Devam" ve "İzin ver" butonlarını gerçek Android dokunma olayı (MotionEvent, isTrusted=true)
+     *    ile otomatik tetikler; şifre/2FA gibi manuel giriş gerektiren bir adım olursa tam boyutta temiz pencereyi gösterir.
      */
     @SuppressLint("SetJavaScriptEnabled")
-    private fun startGoogleDriveOAuthFlow(existingAccount: CloudAccount?) {
+    private fun startGoogleDriveOAuthFlow(existingAccount: CloudAccount?, autoOpenWhenConnected: Boolean = true) {
         stopLoopbackServer()
 
         lifecycleScope.launch {
@@ -791,60 +799,143 @@ class CloudAccountsActivity : AppCompatActivity() {
                 "&response_type=code" +
                 "&scope=" + URLEncoder.encode(CloudManager.GOOGLE_OAUTH_SCOPE_URL, "UTF-8") +
                 "&access_type=offline" +
-                "&prompt=" + (if (emailHint != null) "consent" else "select_account+consent") +
+                "&include_granted_scopes=true" +
                 loginHintParam
 
-            val density = resources.displayMetrics.density
-            val rootLayout = LinearLayout(this@CloudAccountsActivity).apply {
-                orientation = LinearLayout.VERTICAL
+            // Cihazdaki açık Google hesabından otomatik oturum açma (MergeSession) URL'sini almayı dene
+            val mergeSessionUrl = if (!emailHint.isNullOrBlank()) {
+                CloudManager.tryGetWebLoginMergeSessionUrl(
+                    context = this@CloudAccountsActivity,
+                    activity = this@CloudAccountsActivity,
+                    email = emailHint,
+                    continueUrl = authUrl
+                )
+            } else null
+
+            // Eğer weblogin sırasında Play Hizmetleri izin penceresi döndüyse onu başlat
+            val recovery = CloudManager.pendingRecoveryIntent
+            if (recovery != null && existingAccount != null) {
+                stopLoopbackServer()
+                pendingGoogleAccountForAuth = existingAccount
+                googlePlayConsentLauncher.launch(recovery)
+                return@launch
+            }
+
+            val initialLoadUrl = mergeSessionUrl ?: authUrl
+            val dm = resources.displayMetrics
+            val density = dm.density
+            val dialogHeightPx = (dm.heightPixels * 0.84f).toInt().coerceAtLeast((360 * density).toInt())
+
+            val rootContainer = FrameLayout(this@CloudAccountsActivity).apply {
                 layoutParams = ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
+                    dialogHeightPx
                 )
-                setBackgroundColor(ThemeManager.getCardColor(this@CloudAccountsActivity))
+                setBackgroundColor(Color.parseColor("#181818"))
+            }
+
+            val mainColumn = LinearLayout(this@CloudAccountsActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    dialogHeightPx
+                )
             }
 
             val topHelperBar = LinearLayout(this@CloudAccountsActivity).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                val p = (10 * density).toInt()
-                setPadding(p, p / 2, p, p / 2)
+                val p = (12 * density).toInt()
+                setPadding(p, (8 * density).toInt(), p, (8 * density).toInt())
                 setBackgroundColor(Color.parseColor("#212121"))
+            }
+
+            val ivDriveLogo = ImageView(this@CloudAccountsActivity).apply {
+                val sz = (24 * density).toInt()
+                layoutParams = LinearLayout.LayoutParams(sz, sz).apply {
+                    marginEnd = (10 * density).toInt()
+                }
+                setImageResource(R.drawable.cloud_icon_googledrive)
             }
 
             val tvHelper = TextView(this@CloudAccountsActivity).apply {
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                text = if (!emailHint.isNullOrBlank()) "Google Drive: $emailHint" else "Google Drive Yetkilendirmesi"
+                text = if (!emailHint.isNullOrBlank()) "Google Drive • $emailHint" else "Google Drive Bağlantısı"
                 setTextColor(Color.WHITE)
-                textSize = 13.5f
+                textSize = 14f
+                setTypeface(typeface, Typeface.BOLD)
+                isSingleLine = true
             }
 
-            val btnOpenBrowser = Button(this@CloudAccountsActivity).apply {
-                text = "Tarayıcıda Onayla"
+            val btnCancelTop = Button(this@CloudAccountsActivity).apply {
+                text = "İPTAL"
                 textSize = 12f
-                isAllCaps = false
-                setTextColor(Color.WHITE)
-                setBackgroundColor(Color.parseColor("#008578"))
-                setOnClickListener {
-                    try {
-                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(authUrl)))
-                    } catch (_: Exception) {
-                    }
+                setTextColor(Color.parseColor("#B0BEC5"))
+                setBackgroundColor(Color.TRANSPARENT)
+            }
+
+            topHelperBar.addView(ivDriveLogo)
+            topHelperBar.addView(tvHelper)
+            topHelperBar.addView(btnCancelTop)
+
+            // Yükleme / Otomatik Bağlantı Katmanı (rclone veya ham yükleme ekranını tamamen gizler)
+            val loadingOverlay = LinearLayout(this@CloudAccountsActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                layoutParams = FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+                setBackgroundColor(Color.parseColor("#181818"))
+                val pad = (24 * density).toInt()
+                setPadding(pad, pad, pad, pad)
+                isClickable = true
+                isFocusable = true
+            }
+
+            val ivLoadingDrive = ImageView(this@CloudAccountsActivity).apply {
+                val sz = (64 * density).toInt()
+                layoutParams = LinearLayout.LayoutParams(sz, sz).apply {
+                    bottomMargin = (16 * density).toInt()
+                }
+                setImageResource(R.drawable.cloud_icon_googledrive)
+            }
+
+            val pbConnecting = ProgressBar(this@CloudAccountsActivity).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    (36 * density).toInt(),
+                    (36 * density).toInt()
+                ).apply {
+                    bottomMargin = (14 * density).toInt()
                 }
             }
 
-            topHelperBar.addView(tvHelper)
-            topHelperBar.addView(btnOpenBrowser)
+            val tvLoadingStatus = TextView(this@CloudAccountsActivity).apply {
+                text = if (!emailHint.isNullOrBlank()) {
+                    "Google Drive hesabına bağlanılıyor...\n$emailHint"
+                } else {
+                    "Google Drive hesabına bağlanılıyor..."
+                }
+                textSize = 15f
+                gravity = Gravity.CENTER
+                setTextColor(Color.WHITE)
+            }
+
+            loadingOverlay.addView(ivLoadingDrive)
+            loadingOverlay.addView(pbConnecting)
+            loadingOverlay.addView(tvLoadingStatus)
 
             var authDialog: AlertDialog? = null
             var codeHandled = false
+            var webViewRef: WebView? = null
 
             fun handleAuthCodeReceived(code: String) {
                 if (codeHandled || code.isBlank()) return
                 codeHandled = true
                 runOnUiThread {
-                    authDialog?.dismiss()
-                    Toast.makeText(this@CloudAccountsActivity, "Google Drive hesabı bağlanıyor...", Toast.LENGTH_SHORT).show()
+                    CookieManager.getInstance().flush()
+                    loadingOverlay.visibility = View.VISIBLE
+                    tvLoadingStatus.text = "Google Drive dosyaları hazırlanıyor..."
                 }
                 stopLoopbackServer()
                 lifecycleScope.launch {
@@ -854,6 +945,7 @@ class CloudAccountsActivity : AppCompatActivity() {
                         redirectUri = redirectUri,
                         existingAccount = existingAccount
                     )
+                    authDialog?.dismiss()
                     if (saved != null) {
                         refreshAccountsList()
                         Toast.makeText(
@@ -861,7 +953,12 @@ class CloudAccountsActivity : AppCompatActivity() {
                             "✓ Google Drive bağlandı: ${saved.emailOrName}",
                             Toast.LENGTH_SHORT
                         ).show()
-                        launchExplorerForAccount(saved)
+                        if (autoOpenWhenConnected) {
+                            launchExplorerForAccount(saved)
+                            if (!intent.getStringExtra("AUTO_AUTH_ACCOUNT_ID").isNullOrBlank()) {
+                                finish()
+                            }
+                        }
                     } else {
                         Toast.makeText(
                             this@CloudAccountsActivity,
@@ -872,10 +969,42 @@ class CloudAccountsActivity : AppCompatActivity() {
                 }
             }
 
-            val brandFixJs = """
+            // Gerçek Android MotionEvent (isTrusted = true) göndererek WebView içindeki butonlara otomatik basar
+            fun dispatchRealTapOnWebView(cssX: Float, cssY: Float, dpr: Float) {
+                val wv = webViewRef ?: return
+                wv.post {
+                    val scale = if (wv.scale > 0f) wv.scale else dpr.coerceAtLeast(1f)
+                    val px = (cssX * scale).coerceIn(10f, (wv.width - 10).coerceAtLeast(20).toFloat())
+                    val py = (cssY * scale).coerceIn(10f, (wv.height - 10).coerceAtLeast(20).toFloat())
+                    val downTime = SystemClock.uptimeMillis()
+                    val downEvt = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, px, py, 0)
+                    val upEvt = MotionEvent.obtain(downTime, downTime + 45L, MotionEvent.ACTION_UP, px, py, 0)
+                    wv.dispatchTouchEvent(downEvt)
+                    wv.dispatchTouchEvent(upEvt)
+                    downEvt.recycle()
+                    upEvt.recycle()
+                }
+            }
+
+            val driveTriangleDataUri = "data:image/svg+xml;utf8," + Uri.encode(
+                """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 87.3 78"><path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/><path d="m43.65 25-13.75-23.8c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44a9.06 9.06 0 0 0 -1.2 4.5h27.5z" fill="#00ac47"/><path d="m73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5h-27.502l5.852 11.5z" fill="#ea4335"/><path d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2h-18.5c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d"/><path d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc"/><path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 28h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00"/></svg>"""
+            )
+
+            val escapedHintEmail = (emailHint ?: "").replace("'", "\\'")
+
+            val sanitizeAndAutomateJs = """
                 (function() {
-                    function renameAppLabel() {
-                        if (!document.body) return;
+                    var driveIconUri = '$driveTriangleDataUri';
+                    var targetEmail = '$escapedHintEmail'.toLowerCase();
+
+                    function cleanBranding() {
+                        if (!document.head || !document.body) return;
+                        if (!document.getElementById('fm_plus_clean_style')) {
+                            var st = document.createElement('style');
+                            st.id = 'fm_plus_clean_style';
+                            st.innerHTML = 'div[data-logo] svg, div[data-custom-logo] svg { display:none !important; }';
+                            document.head.appendChild(st);
+                        }
                         var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
                         var node;
                         while ((node = walker.nextNode())) {
@@ -883,34 +1012,190 @@ class CloudAccountsActivity : AppCompatActivity() {
                                 node.nodeValue = node.nodeValue.replace(/rclone/gi, 'Dosya Yöneticisi +');
                             }
                         }
+                        var imgs = document.querySelectorAll('img');
+                        for (var i = 0; i < imgs.length; i++) {
+                            var im = imgs[i];
+                            var src = (im.src || '').toLowerCase();
+                            var alt = (im.alt || '').toLowerCase();
+                            if (src.indexOf('googleusercontent') !== -1 && im.width >= 20 && im.width <= 96 && src.indexOf('avatar') === -1 && src.indexOf('/a/') === -1) {
+                                im.src = driveIconUri;
+                            } else if (alt.indexOf('rclone') !== -1) {
+                                im.src = driveIconUri;
+                                im.alt = 'Dosya Yöneticisi +';
+                            }
+                        }
+                        var svgs = document.querySelectorAll('svg');
+                        for (var j = 0; j < svgs.length; j++) {
+                            var s = svgs[j];
+                            var rect = s.getBoundingClientRect();
+                            if (rect.width >= 28 && rect.width <= 80 && rect.top < 220) {
+                                var parent = s.parentElement;
+                                if (parent && !parent.querySelector('.fm_drive_logo') && parent.id !== 'headingText') {
+                                    var paths = s.querySelectorAll('path');
+                                    if (paths.length <= 3) {
+                                        s.style.display = 'none';
+                                        var dImg = document.createElement('img');
+                                        dImg.className = 'fm_drive_logo';
+                                        dImg.src = driveIconUri;
+                                        dImg.style.width = '40px';
+                                        dImg.style.height = '40px';
+                                        parent.appendChild(dImg);
+                                    }
+                                }
+                            }
+                        }
                     }
-                    renameAppLabel();
+
+                    cleanBranding();
                     if (window.MutationObserver && document.body) {
-                        new MutationObserver(renameAppLabel).observe(document.body, { childList: true, subtree: true });
+                        new MutationObserver(cleanBranding).observe(document.body, { childList: true, subtree: true });
                     }
+
+                    function tryAutoAdvance() {
+                        cleanBranding();
+                        var dpr = window.devicePixelRatio || 1;
+
+                        // 1. Hesap seçici (AccountChooser) ekranındaysak hedef e-postayı otomatik seç
+                        if (targetEmail) {
+                            var items = document.querySelectorAll('[data-identifier], [data-email]');
+                            for (var i = 0; i < items.length; i++) {
+                                var idVal = (items[i].getAttribute('data-identifier') || items[i].getAttribute('data-email') || '').toLowerCase();
+                                if (idVal === targetEmail) {
+                                    items[i].scrollIntoView({block: 'center'});
+                                    var r = items[i].getBoundingClientRect();
+                                    if (r.width > 0 && r.height > 0 && window.AndroidOAuthBridge) {
+                                        window.AndroidOAuthBridge.onAutoTapTarget(r.left + r.width / 2, r.top + r.height / 2, dpr, 'account_select');
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+
+                        // 2. E-posta kutusu (#identifierId) zaten doluysa ve şifre alanı yoksa "Sonraki" (#identifierNext) butonuna otomatik bas
+                        var emailInput = document.querySelector('input[type="email"], #identifierId');
+                        var passInput = document.querySelector('input[type="password"]');
+                        var isPassVisible = passInput && passInput.offsetParent !== null;
+                        if (emailInput && emailInput.offsetParent !== null && !isPassVisible) {
+                            var val = (emailInput.value || '').trim();
+                            if (val.length > 3 && !window._fmIdentifierClicked) {
+                                var nextContainer = document.getElementById('identifierNext');
+                                var nextBtn = nextContainer ? (nextContainer.querySelector('button') || nextContainer) : null;
+                                if (nextBtn) {
+                                    window._fmIdentifierClicked = true;
+                                    nextBtn.scrollIntoView({block: 'center'});
+                                    var nr = nextBtn.getBoundingClientRect();
+                                    if (nr.width > 0 && nr.height > 0 && window.AndroidOAuthBridge) {
+                                        window.AndroidOAuthBridge.onAutoTapTarget(nr.left + nr.width / 2, nr.top + nr.height / 2, dpr, 'identifier_next');
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+
+                        // 3. OAuth İzin / Onay ekranındaysak ("Devam", "İzin ver", "Allow", "Continue") otomatik onayla
+                        if (!isPassVisible && (!emailInput || emailInput.offsetParent === null)) {
+                            var checkboxes = document.querySelectorAll('input[type="checkbox"]');
+                            for (var c = 0; c < checkboxes.length; c++) {
+                                if (!checkboxes[c].checked) {
+                                    checkboxes[c].click();
+                                }
+                            }
+                            var approveBtn = document.getElementById('submit_approve_access');
+                            if (!approveBtn) {
+                                var allBtns = document.querySelectorAll('button, div[role="button"], input[type="submit"]');
+                                for (var b = 0; b < allBtns.length; b++) {
+                                    var txt = (allBtns[b].innerText || allBtns[b].value || '').trim().toLowerCase();
+                                    if (txt === 'devam' || txt === 'i̇zin ver' || txt === 'izin ver' || txt === 'onayla' || txt === 'allow' || txt === 'continue') {
+                                        approveBtn = allBtns[b];
+                                        break;
+                                    }
+                                }
+                            }
+                            if (approveBtn && approveBtn.offsetParent !== null && !approveBtn.disabled) {
+                                approveBtn.scrollIntoView({block: 'center'});
+                                var ar = approveBtn.getBoundingClientRect();
+                                if (ar.width > 0 && ar.height > 0 && window.AndroidOAuthBridge) {
+                                    window.AndroidOAuthBridge.onAutoTapTarget(ar.left + ar.width / 2, ar.top + ar.height / 2, dpr, 'consent_approve');
+                                    return;
+                                }
+                            }
+                        }
+
+                        // Kullanıcı girişi (şifre / 2FA vb.) gerekiyorsa temizlenmiş ekranı göster
+                        if (window.AndroidOAuthBridge) {
+                            window.AndroidOAuthBridge.onRevealCleanWebView();
+                        }
+                    }
+
+                    setTimeout(tryAutoAdvance, 220);
                 })();
             """.trimIndent()
 
             val webView = WebView(this@CloudAccountsActivity).apply {
                 layoutParams = LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
-                    (460 * density).toInt()
+                    0,
+                    1f
                 )
+                alpha = 0f
+                isVerticalScrollBarEnabled = true
+                isHorizontalScrollBarEnabled = false
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
+                settings.databaseEnabled = true
+                settings.useWideViewPort = true
+                settings.loadWithOverviewMode = true
+                settings.setSupportZoom(true)
+                settings.builtInZoomControls = true
+                settings.displayZoomControls = false
                 settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                 settings.userAgentString =
-                    "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
+                    "Mozilla/5.0 (Linux; Android 14; SM-X710) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.6613.127 Safari/537.36"
+
+                addJavascriptInterface(object {
+                    @JavascriptInterface
+                    fun onAutoTapTarget(x: Float, y: Float, dpr: Float, stepName: String) {
+                        dispatchRealTapOnWebView(x, y, dpr)
+                        // Eğer otomatik tıklamadan 1.6 sn sonra hala yönlendirme olmadıysa temiz ekranı göster
+                        postDelayed({
+                            if (!codeHandled) {
+                                alpha = 1f
+                                loadingOverlay.visibility = View.GONE
+                            }
+                        }, 1600L)
+                    }
+
+                    @JavascriptInterface
+                    fun onRevealCleanWebView() {
+                        runOnUiThread {
+                            if (!codeHandled) {
+                                alpha = 1f
+                                loadingOverlay.visibility = View.GONE
+                            }
+                        }
+                    }
+                }, "AndroidOAuthBridge")
 
                 webViewClient = object : WebViewClient() {
+                    override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                        super.onPageStarted(view, url, favicon)
+                        val u = url ?: ""
+                        if (u.startsWith("http://127.0.0.1") || u.startsWith("http://localhost")) {
+                            val code = Uri.parse(u).getQueryParameter("code")
+                            if (!code.isNullOrBlank()) {
+                                handleAuthCodeReceived(code)
+                            }
+                        }
+                    }
+
                     override fun onPageCommitVisible(view: WebView?, url: String?) {
                         super.onPageCommitVisible(view, url)
-                        view?.evaluateJavascript(brandFixJs, null)
+                        view?.evaluateJavascript(sanitizeAndAutomateJs, null)
                     }
 
                     override fun onPageFinished(view: WebView?, url: String?) {
                         super.onPageFinished(view, url)
-                        view?.evaluateJavascript(brandFixJs, null)
+                        view?.evaluateJavascript(sanitizeAndAutomateJs, null)
                     }
 
                     override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
@@ -938,23 +1223,40 @@ class CloudAccountsActivity : AppCompatActivity() {
                         return false
                     }
                 }
-                loadUrl(authUrl)
             }
+            webViewRef = webView
 
-            rootLayout.addView(topHelperBar)
-            rootLayout.addView(webView)
+            CookieManager.getInstance().setAcceptCookie(true)
+            CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
+
+            mainColumn.addView(topHelperBar)
+            mainColumn.addView(webView)
+            rootContainer.addView(mainColumn)
+            rootContainer.addView(loadingOverlay)
 
             authDialog = AlertDialog.Builder(this@CloudAccountsActivity)
-                .setView(rootLayout)
-                .setNegativeButton("İPTAL") { _, _ ->
-                    stopLoopbackServer()
-                }
+                .setView(rootContainer)
                 .setOnCancelListener {
                     stopLoopbackServer()
                 }
                 .create()
 
+            btnCancelTop.setOnClickListener {
+                stopLoopbackServer()
+                authDialog?.dismiss()
+            }
+
             authDialog.show()
+            authDialog.window?.let { win ->
+                win.clearFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
+                win.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+                win.setLayout(
+                    (dm.widthPixels * 0.92f).toInt(),
+                    dialogHeightPx
+                )
+            }
+
+            webView.loadUrl(initialLoadUrl)
 
             loopbackServerJob = lifecycleScope.launch(Dispatchers.IO) {
                 try {
@@ -968,7 +1270,7 @@ class CloudAccountsActivity : AppCompatActivity() {
                         <html><head><meta charset="utf-8"/></head>
                         <body style="font-family:sans-serif;text-align:center;padding:40px;background:#121212;color:#ffffff;">
                         <h2 style="color:#26A69A;">✓ Google Drive Bağlandı!</h2>
-                        <p>Dosya Yöneticisi + uygulamasına geri dönebilirsiniz.</p>
+                        <p>Dosya Yöneticisi + uygulamasına yönlendiriliyorsunuz...</p>
                         <script>window.close();</script>
                         </body></html>
                     """.trimIndent()
@@ -1069,7 +1371,7 @@ class CloudAccountsActivity : AppCompatActivity() {
                     1 -> launchNativeGoogleAccountPicker(account.emailOrName)
                     2 -> {
                         if (account.provider == CloudProviderType.GOOGLE_DRIVE) {
-                            startGoogleDriveOAuthFlow(existingAccount = account)
+                            startGoogleDriveOAuthFlow(existingAccount = account, autoOpenWhenConnected = true)
                         } else {
                             showAddCloudCredentialsDialog(account.provider)
                         }
