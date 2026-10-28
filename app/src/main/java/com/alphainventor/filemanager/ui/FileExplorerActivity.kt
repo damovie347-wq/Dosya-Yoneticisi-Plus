@@ -40,12 +40,10 @@ import java.io.File
 import java.util.Stack
 
 /**
- * Orijinal Dosya Yöneticisi + 3.6.7 Dosya ve Bulut Gezgini (00:11 - 00:23 ve 01:08 - 01:27):
- * - Üstte Koyu Bar: Geri Oku, Başlık (Google Drive / Ana bellek / Videolar) ve Alt Başlık (E-posta), Büyüteç, Görünüm/Sırala, Üç Nokta
- * - Altında PathBar: Ev ikonu > Sürücü/Bulut ikonu > Klasör yolu, sağda Boş alan veya Üst Klasöre Çık oku
- * - Yüklenirken ortada yuvarlak beyaz daire içinde mavi yükleme halkası (00:12)
- * - Liste ve Izgara (Grid) görünümü geçişi (01:08 Videolar ızgara görünümü)
- * - Uzun basınca alt aksiyon barı: Kopyala | Taşı | Yeniden adlandır | Sil | Daha fazla -> Paylaş, Yer İmi Ekle, Şununla aç, Özellikler, Ayarlar
+ * Orijinal Dosya Yöneticisi + 3.6.7 Dosya, Medya Kategorileri ve Bulut Gezgini:
+ * - Videolar, Görüntüler, Ses ve Belgeler kategorilerinde önce Klasör Kutucukları (Folder Buckets: InstaEclipse (64), Twitter (22), Movies (6) vb.) gösterilir, klasöre tıklanınca o klasördeki medya dosyaları açılır.
+ * - Ana bellek ve SD kart içinde PathBar sağ tarafında "KULLANILAN 66%" / "KULLANILAN 79%" rozeti yer alır, tıklanınca ilgili diskin Bellek Analizi ekranı açılır.
+ * - Yer İmi Ekle ve Geçmiş kaydı sol çekmeceyle tam senkronize çalışır.
  */
 class FileExplorerActivity : AppCompatActivity() {
 
@@ -54,7 +52,11 @@ class FileExplorerActivity : AppCompatActivity() {
 
     private var mode: String = "LOCAL" // LOCAL, CATEGORY, CLOUD, REMOTE
     private var currentPath: String = ""
+    private var localVolumeRootPath: String = ""
+    private var localVolumeTitle: String = "Ana bellek"
     private var categoryName: String = ""
+    private var selectedBucketPath: String = ""
+    private var selectedBucketName: String = ""
     private var cloudAccount: CloudAccount? = null
     private var remoteAccount: RemoteAccount? = null
 
@@ -62,10 +64,6 @@ class FileExplorerActivity : AppCompatActivity() {
     private val cloudNavStack = Stack<CloudCrumb>()
     private var fullCurrentItems: List<FileItem> = emptyList()
 
-    /**
-     * Google Drive ilk açılışta OAuth kullanıcı onayı (UserRecoverableAuthException) isterse
-     * izin ekranını açar ve onay sonrası klasörü otomatik yeniler.
-     */
     private val driveConsentLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -140,18 +138,43 @@ class FileExplorerActivity : AppCompatActivity() {
                 val title = intent.getStringExtra("TITLE") ?: categoryName
                 binding.tvExplorerTitle.text = title
                 binding.tvExplorerSubtitle.visibility = View.GONE
-                binding.ivRootTypeCrumb.setImageResource(R.drawable.icon_main_storage_s)
+                binding.ivRootTypeCrumb.setImageResource(
+                    when (categoryName) {
+                        "VIDEOS" -> R.drawable.icon_file_video_s
+                        "IMAGES" -> R.drawable.icon_file_image_s
+                        "AUDIO" -> R.drawable.icon_file_music_s
+                        "DOCUMENTS" -> R.drawable.icon_file_document_s
+                        else -> R.drawable.icon_main_storage_s
+                    }
+                )
                 binding.tvStorageBadge.visibility = View.GONE
                 binding.btnParentFolderUp.visibility = View.VISIBLE
+                // Videolar, Görüntüler, Ses ve Belgeler varsayılan olarak Klasör Kutucuğu (Grid) modunda açılır
+                if (categoryName in setOf("VIDEOS", "IMAGES", "AUDIO", "DOCUMENTS")) {
+                    adapter.isGridMode = true
+                    updateRecyclerLayoutManager()
+                }
             }
             else -> {
                 val title = intent.getStringExtra("TITLE") ?: "Ana bellek"
+                localVolumeTitle = title
+                val mainRoot = LocalFileRepository.rootStorageDir.absolutePath
+                val removable = LocalFileRepository.getRemovableStorageVolumes(this)
+                    .firstOrNull { currentPath.startsWith(it.path) }
+                if (removable != null) {
+                    localVolumeRootPath = removable.path
+                    localVolumeTitle = removable.title
+                    binding.ivRootTypeCrumb.setImageResource(
+                        if (removable.isUsb) R.drawable.icon_usb_storage_s else R.drawable.icon_sd_s
+                    )
+                } else {
+                    localVolumeRootPath = mainRoot
+                    binding.ivRootTypeCrumb.setImageResource(R.drawable.icon_main_storage_s)
+                }
+
                 binding.tvExplorerTitle.text = title
                 binding.tvExplorerSubtitle.visibility = View.GONE
-                binding.ivRootTypeCrumb.setImageResource(R.drawable.icon_main_storage_s)
-                val overview = LocalFileRepository.getMainStorageOverview()
-                binding.tvStorageBadge.visibility = View.VISIBLE
-                binding.tvStorageBadge.text = "Boş ${FormatUtils.formatSize(overview.freeBytes)}"
+                updateLocalStorageUsedPill()
                 binding.btnParentFolderUp.visibility = View.VISIBLE
             }
         }
@@ -159,7 +182,29 @@ class FileExplorerActivity : AppCompatActivity() {
         loadCurrentDirectory(forceRefresh = false)
     }
 
+    private fun updateLocalStorageUsedPill() {
+        val rootPath = localVolumeRootPath.ifBlank { LocalFileRepository.rootStorageDir.absolutePath }
+        val overview = LocalFileRepository.getStorageOverviewForPath(rootPath)
+        binding.tvStorageBadge.visibility = View.VISIBLE
+        binding.tvStorageBadge.background = ThemeManager.createUsedPillBackground(this)
+        val density = resources.displayMetrics.density
+        val hPad = (10 * density).toInt()
+        val vPad = (4 * density).toInt()
+        binding.tvStorageBadge.setPadding(hPad, vPad, hPad, vPad)
+        binding.tvStorageBadge.setTextColor(ThemeManager.getPrimaryTextColor(this))
+        binding.tvStorageBadge.text = "◔ KULLANILAN ${overview.usedPercent}%"
+        binding.tvStorageBadge.setOnClickListener {
+            startActivity(Intent(this, StorageAnalysisActivity::class.java).apply {
+                putExtra("TARGET_PATH", rootPath)
+                putExtra("TARGET_TITLE", localVolumeTitle)
+            })
+        }
+    }
+
     private fun updateCloudQuotaLabel(acc: CloudAccount) {
+        binding.tvStorageBadge.background = null
+        binding.tvStorageBadge.setOnClickListener(null)
+        binding.tvStorageBadge.setTextColor(ThemeManager.getSecondaryTextColor(this))
         if (acc.usedQuotaBytes > 0L || acc.totalQuotaBytes > 0L) {
             binding.tvStorageBadge.text = "Boş ${FormatUtils.formatSize(acc.freeQuotaBytes)}"
         } else {
@@ -197,7 +242,7 @@ class FileExplorerActivity : AppCompatActivity() {
             val dm = resources.displayMetrics
             val widthDp = dm.widthPixels / dm.density
             val spans = when {
-                widthDp >= 720f -> 8
+                widthDp >= 720f -> 7
                 widthDp >= 540f -> 5
                 else -> 3
             }
@@ -240,6 +285,7 @@ class FileExplorerActivity : AppCompatActivity() {
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
             override fun afterTextChanged(s: Editable?) {
                 val q = s?.toString()?.trim().orEmpty()
+                adapter.highlightQuery = q
                 if (q.isEmpty()) {
                     adapter.submitList(fullCurrentItems)
                 } else {
@@ -251,7 +297,7 @@ class FileExplorerActivity : AppCompatActivity() {
         // Görünüm (Liste / Izgara) ve Sıralama Menüsü
         binding.btnSortAndView.setOnClickListener { view ->
             val popup = PopupMenu(this, view)
-            popup.menu.add(0, 10, 0, if (adapter.isGridMode) " Görünüm: Liste Görünümüne Geç" else " Görünüm: Izgara (Kare) Görünümüne Geç")
+            popup.menu.add(0, 10, 0, if (adapter.isGridMode) "Görünüm: Liste Görünümüne Geç" else "Görünüm: Izgara (Kare) Görünümüne Geç")
             popup.menu.add(0, 1, 1, "Ada Göre Sırala (A → Z)")
             popup.menu.add(0, 2, 2, "Ada Göre Sırala (Z → A)")
             popup.menu.add(0, 3, 3, "Boyuta Göre Sırala (Büyükten Küçüğe)")
@@ -304,7 +350,7 @@ class FileExplorerActivity : AppCompatActivity() {
             popup.show()
         }
 
-        // Alt Çoklu Seçim Aksiyon Çubuğu (01:21: Kopyala | Taşı | Yeniden adlandır | Sil | Daha fazla)
+        // Alt Çoklu Seçim Aksiyon Çubuğu
         binding.btnActionCopy.setOnClickListener {
             val selected = adapter.getSelectedItems()
             if (selected.isNotEmpty()) {
@@ -343,8 +389,6 @@ class FileExplorerActivity : AppCompatActivity() {
             }
         }
 
-        // Orijinal APK'daki (01:22 - 01:24) "Daha fazla" açılır menüsü:
-        // Paylaş | Yer İmi Ekle | Şununla aç | Özellikler | Ayarlar
         binding.btnActionMore.setOnClickListener { view ->
             val selected = adapter.getSelectedItems()
             if (selected.isEmpty()) return@setOnClickListener
@@ -365,6 +409,7 @@ class FileExplorerActivity : AppCompatActivity() {
                 when (item.itemId) {
                     1 -> LocalFileRepository.shareFile(this, first)
                     2 -> {
+                        LocalFileRepository.addBookmark(this, first)
                         Toast.makeText(this, "Yer imlerine eklendi: ${first.name}", Toast.LENGTH_SHORT).show()
                         adapter.clearSelection()
                         updateSelectionUi()
@@ -417,10 +462,13 @@ class FileExplorerActivity : AppCompatActivity() {
             binding.tvExplorerTitle.text = when (mode) {
                 "CLOUD" -> cloudAccount?.provider?.displayName ?: "Bulut"
                 "REMOTE" -> remoteAccount?.displayName ?: "Uzak"
-                "CATEGORY" -> intent.getStringExtra("TITLE") ?: categoryName
+                "CATEGORY" -> {
+                    val baseTitle = intent.getStringExtra("TITLE") ?: categoryName
+                    if (selectedBucketName.isNotBlank()) selectedBucketName else baseTitle
+                }
                 else -> {
-                    val rootPath = LocalFileRepository.rootStorageDir.absolutePath
-                    if (currentPath == rootPath) "Ana bellek" else File(currentPath).name
+                    val rootPath = localVolumeRootPath.ifBlank { LocalFileRepository.rootStorageDir.absolutePath }
+                    if (currentPath == rootPath) localVolumeTitle else File(currentPath).name
                 }
             }
         }
@@ -452,9 +500,13 @@ class FileExplorerActivity : AppCompatActivity() {
                         driveConsentLauncher.launch(recovery)
                         return@launch
                     }
-                    // Kota bilgisini arka planda güncelle
+                    // Güncel token'ı cloudAccount'ta sakla
+                    val refreshedAcc = CloudManager.getAccounts(this@FileExplorerActivity).firstOrNull { it.id == acc.id }
+                    if (refreshedAcc != null) {
+                        cloudAccount = refreshedAcc
+                    }
                     launch {
-                        val updatedAcc = CloudManager.fetchGoogleDriveQuota(this@FileExplorerActivity, acc)
+                        val updatedAcc = CloudManager.fetchGoogleDriveQuota(this@FileExplorerActivity, cloudAccount ?: acc)
                         cloudAccount = updatedAcc
                         updateCloudQuotaLabel(updatedAcc)
                     }
@@ -465,11 +517,24 @@ class FileExplorerActivity : AppCompatActivity() {
                     RemoteManager.listRemoteDirectory(rem, currentPath)
                 }
                 "CATEGORY" -> {
-                    LocalFileRepository.getCategoryFiles(categoryName)
+                    if (categoryName in setOf("VIDEOS", "IMAGES", "AUDIO", "DOCUMENTS")) {
+                        if (selectedBucketPath.isEmpty()) {
+                            // 1. AŞAMA: Klasör Kutucukları (Folder Buckets: InstaEclipse (64), Twitter (22), Movies (6) vb.)
+                            LocalFileRepository.getCategoryFolderBuckets(this@FileExplorerActivity, categoryName)
+                        } else {
+                            // 2. AŞAMA: Seçilen klasörün içindeki medya dosyaları
+                            LocalFileRepository.getCategoryFilesInBucket(
+                                this@FileExplorerActivity,
+                                categoryName,
+                                selectedBucketPath
+                            )
+                        }
+                    } else {
+                        LocalFileRepository.getCategoryFiles(this@FileExplorerActivity, categoryName)
+                    }
                 }
                 else -> {
-                    val overview = LocalFileRepository.getMainStorageOverview()
-                    binding.tvStorageBadge.text = "Boş ${FormatUtils.formatSize(overview.freeBytes)}"
+                    updateLocalStorageUsedPill()
                     LocalFileRepository.listDirectory(File(currentPath))
                 }
             }
@@ -493,10 +558,6 @@ class FileExplorerActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Videodaki (00:28-00:32) tekrarlanan breadcrumb hatasını kesin olarak önleyen yığın (stack) kontrolü:
-     * Aynı klasöre üst üste basılsa bile breadcrumb'a kopya eklemez.
-     */
     private fun renderBreadcrumbs() {
         binding.llBreadcrumbContainer.removeAllViews()
         val crumbs: List<Pair<String, () -> Unit>> = when (mode) {
@@ -537,13 +598,25 @@ class FileExplorerActivity : AppCompatActivity() {
             }
             "CATEGORY" -> {
                 val rootTitle = intent.getStringExtra("TITLE") ?: categoryName
-                listOf(rootTitle to {})
+                val list = mutableListOf<Pair<String, () -> Unit>>(
+                    rootTitle to {
+                        if (selectedBucketPath.isNotEmpty()) {
+                            selectedBucketPath = ""
+                            selectedBucketName = ""
+                            loadCurrentDirectory()
+                        }
+                    }
+                )
+                if (selectedBucketName.isNotEmpty()) {
+                    list.add(selectedBucketName to {})
+                }
+                list
             }
             else -> {
-                val rootPath = LocalFileRepository.rootStorageDir.absolutePath
+                val rootPath = localVolumeRootPath.ifBlank { LocalFileRepository.rootStorageDir.absolutePath }
                 val rel = currentPath.removePrefix(rootPath).trim('/')
                 val list = mutableListOf<Pair<String, () -> Unit>>(
-                    "" to {
+                    localVolumeTitle to {
                         if (currentPath != rootPath) {
                             currentPath = rootPath
                             loadCurrentDirectory()
@@ -591,7 +664,6 @@ class FileExplorerActivity : AppCompatActivity() {
         if (item.isDirectory) {
             when (mode) {
                 "CLOUD" -> {
-                    // Aynı klasör zaten en üstteyse tekrar ekleme!
                     if (cloudNavStack.isEmpty() || cloudNavStack.peek().id != item.id) {
                         cloudNavStack.push(CloudCrumb(item.id, item.name))
                     }
@@ -601,59 +673,80 @@ class FileExplorerActivity : AppCompatActivity() {
                     currentPath = item.path
                     loadCurrentDirectory()
                 }
+                "CATEGORY" -> {
+                    // Klasör Kutucuğuna (örn: InstaEclipse (64) veya Movies (6)) tıklandığında o klasörün medyalarını aç!
+                    selectedBucketPath = item.path
+                    selectedBucketName = item.name
+                    LocalFileRepository.recordHistory(this, item, intent.getStringExtra("TITLE") ?: "Medya")
+                    loadCurrentDirectory(forceRefresh = false)
+                }
                 else -> {
-                    // Kategori görünümündeyken (örn. Videolar ızgarasında Download klasörüne tıklandığında) o klasörün içine gir
-                    if (mode == "CATEGORY") {
-                        mode = "LOCAL"
-                    }
                     currentPath = item.path
+                    LocalFileRepository.recordHistory(this, item, localVolumeTitle)
                     loadCurrentDirectory()
                 }
             }
             return
         }
 
-        when {
-            item.isVideo -> {
-                if (AppSettings.useInternalVideoPlayer) {
-                    startActivity(Intent(this, VideoPlayerActivity::class.java).apply {
-                        putExtra("VIDEO_URL", if (item.sourceType == FileSourceType.CLOUD) item.downloadUrl else item.path)
-                        putExtra("VIDEO_TITLE", item.name)
-                        putExtra("AUTH_TOKEN", cloudAccount?.accessToken ?: "")
-                    })
-                } else {
-                    LocalFileRepository.openWithExternalChooser(this, item, cloudAccount?.accessToken ?: "")
+        // Geçmişe (Sol Çekmece 3. Sekme 🕒) kaydet
+        if (item.sourceType == FileSourceType.LOCAL) {
+            val section = when (mode) {
+                "CATEGORY" -> intent.getStringExtra("TITLE") ?: "Videolar"
+                else -> localVolumeTitle
+            }
+            LocalFileRepository.recordHistory(this, item, section)
+        }
+
+        lifecycleScope.launch {
+            val activeToken = if (item.sourceType == FileSourceType.CLOUD && cloudAccount != null) {
+                CloudManager.resolveGoogleDriveToken(this@FileExplorerActivity, cloudAccount!!, forceRefresh = false)
+            } else {
+                cloudAccount?.accessToken ?: ""
+            }
+
+            when {
+                item.isVideo -> {
+                    if (AppSettings.useInternalVideoPlayer) {
+                        startActivity(Intent(this@FileExplorerActivity, VideoPlayerActivity::class.java).apply {
+                            putExtra("VIDEO_URL", if (item.sourceType == FileSourceType.CLOUD) item.downloadUrl else item.path)
+                            putExtra("VIDEO_TITLE", item.name)
+                            putExtra("AUTH_TOKEN", activeToken)
+                        })
+                    } else {
+                        LocalFileRepository.openWithExternalChooser(this@FileExplorerActivity, item, activeToken)
+                    }
                 }
-            }
-            item.isAudio -> {
-                if (AppSettings.useInternalMusicPlayer) {
-                    startActivity(Intent(this, MusicPlayerActivity::class.java).apply {
-                        putExtra("AUDIO_URL", if (item.sourceType == FileSourceType.CLOUD) item.downloadUrl else item.path)
-                        putExtra("AUDIO_TITLE", item.name)
-                        putExtra("AUTH_TOKEN", cloudAccount?.accessToken ?: "")
-                    })
-                } else {
-                    LocalFileRepository.openWithExternalChooser(this, item, cloudAccount?.accessToken ?: "")
+                item.isAudio -> {
+                    if (AppSettings.useInternalMusicPlayer) {
+                        startActivity(Intent(this@FileExplorerActivity, MusicPlayerActivity::class.java).apply {
+                            putExtra("AUDIO_URL", if (item.sourceType == FileSourceType.CLOUD) item.downloadUrl else item.path)
+                            putExtra("AUDIO_TITLE", item.name)
+                            putExtra("AUTH_TOKEN", activeToken)
+                        })
+                    } else {
+                        LocalFileRepository.openWithExternalChooser(this@FileExplorerActivity, item, activeToken)
+                    }
                 }
-            }
-            item.isImage -> {
-                if (AppSettings.useInternalImageViewer && item.sourceType == FileSourceType.LOCAL) {
-                    startActivity(Intent(this, ImageViewerActivity::class.java).apply {
-                        putExtra("IMAGE_PATH", item.path)
-                        putExtra("IMAGE_TITLE", item.name)
-                    })
-                } else {
-                    LocalFileRepository.openWithExternalChooser(this, item, cloudAccount?.accessToken ?: "")
+                item.isImage -> {
+                    if (AppSettings.useInternalImageViewer && item.sourceType == FileSourceType.LOCAL) {
+                        startActivity(Intent(this@FileExplorerActivity, ImageViewerActivity::class.java).apply {
+                            putExtra("IMAGE_PATH", item.path)
+                            putExtra("IMAGE_TITLE", item.name)
+                        })
+                    } else {
+                        LocalFileRepository.openWithExternalChooser(this@FileExplorerActivity, item, activeToken)
+                    }
                 }
-            }
-            (item.extension in setOf("txt", "md", "json", "xml", "log", "ini", "csv", "html") && AppSettings.useInternalTextEditor && item.sourceType == FileSourceType.LOCAL) -> {
-                startActivity(Intent(this, TextEditorActivity::class.java).apply {
-                    putExtra("FILE_PATH", item.path)
-                    putExtra("FILE_TITLE", item.name)
-                })
-            }
-            else -> {
-                LocalFileRepository.openWithExternalChooser(this, item, cloudAccount?.accessToken ?: "")
+                (item.extension in setOf("txt", "md", "json", "xml", "log", "ini", "csv", "html") && AppSettings.useInternalTextEditor && item.sourceType == FileSourceType.LOCAL) -> {
+                    startActivity(Intent(this@FileExplorerActivity, TextEditorActivity::class.java).apply {
+                        putExtra("FILE_PATH", item.path)
+                        putExtra("FILE_TITLE", item.name)
+                    })
+                }
+                else -> {
+                    LocalFileRepository.openWithExternalChooser(this@FileExplorerActivity, item, activeToken)
+                }
             }
         }
     }
@@ -809,8 +902,18 @@ class FileExplorerActivity : AppCompatActivity() {
                     finish()
                 }
             }
+            "CATEGORY" -> {
+                if (selectedBucketPath.isNotEmpty()) {
+                    // Klasör içinden Kategori Klasör Kutucukları ekranına geri dön
+                    selectedBucketPath = ""
+                    selectedBucketName = ""
+                    loadCurrentDirectory(forceRefresh = false)
+                } else {
+                    finish()
+                }
+            }
             "LOCAL" -> {
-                val rootPath = LocalFileRepository.rootStorageDir.absolutePath
+                val rootPath = localVolumeRootPath.ifBlank { LocalFileRepository.rootStorageDir.absolutePath }
                 if (currentPath != rootPath && currentPath.startsWith(rootPath)) {
                     val parent = File(currentPath).parentFile
                     if (parent != null && parent.absolutePath.startsWith(rootPath)) {

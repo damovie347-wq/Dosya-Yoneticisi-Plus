@@ -7,6 +7,7 @@ enum class HomeCategoryType {
     SD_CARD,
     USB_STORAGE,
     DOWNLOADS,
+    RECYCLE_BIN,
     STORAGE_ANALYSIS,
     IMAGES,
     AUDIO,
@@ -29,7 +30,8 @@ data class HomeCategoryItem(
     val totalBytes: Long = 0L,
     val showStorageBar: Boolean = false,
     val showPieChart: Boolean = false,
-    val piePercent: Int = 0
+    val piePercent: Int = 0,
+    val customPath: String = ""
 )
 
 enum class FileSourceType {
@@ -54,7 +56,9 @@ data class FileItem(
     val downloadUrl: String = "",
     val thumbnailUrl: String = "",
     val parentId: String = "",
-    val sectionHeader: String = ""
+    val sectionHeader: String = "",
+    val firstMediaPreviewPath: String = "",
+    val mediaCategoryBadge: String = ""
 ) : Serializable {
 
     val extension: String
@@ -106,12 +110,12 @@ data class FileItem(
 }
 
 enum class CloudProviderType(val displayName: String, val prefName: String) {
-    DROPBOX("Dropbox", "DropboxPrefs"),
     GOOGLE_DRIVE("Google Drive", "GoogleDrivePrefs"),
+    DROPBOX("Dropbox", "DropboxPrefs"),
     ONEDRIVE("OneDrive", "OneDrivePrefs"),
     BOX("Box", "BoxCloudPrefs"),
-    NEXTCLOUD("Nextcloud", "WebDAVPrefs"),
-    YANDEX("Yandex", "YandexDiskPrefs")
+    YANDEX("Yandex.Disk", "YandexDiskPrefs"),
+    NEXTCLOUD("Nextcloud", "WebDAVPrefs")
 }
 
 data class CloudAccount(

@@ -16,7 +16,6 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -28,6 +27,7 @@ import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.extractor.DefaultExtractorsFactory
+import com.alphainventor.filemanager.R
 import com.alphainventor.filemanager.cloud.CloudManager
 import com.alphainventor.filemanager.core.LocalFileRepository
 import com.alphainventor.filemanager.databinding.ActivityVideoPlayerBinding
@@ -35,6 +35,14 @@ import com.alphainventor.filemanager.model.FileItem
 import com.alphainventor.filemanager.model.FileSourceType
 import com.alphainventor.filemanager.util.FormatUtils
 
+/**
+ * Orijinal Dosya Yöneticisi + 3.6.7 Video Oynatıcı (com.alphainventor.filemanager.viewer.VideoPlayerActivity):
+ * - Orijinal APK'dan çıkarılan saf beyaz vektör ikonlar:
+ *   En-Boy Oranı (ic_vp_resize_fit / crop / stretch), Önceki (ic_vp_prev), Oynat/Duraklat (ic_vp_play / ic_vp_pause),
+ *   Sonraki (ic_vp_next), Ek Kontroller Ok Butonu (ic_vp_expand_up / ic_vp_expand_down),
+ *   ve Seekbar sağ üstünde Kilit (ic_vp_lock) + Ekran Döndürme (ic_vp_rotate).
+ * - Sağ alttaki oka basıldığında hemen üstte Ses Kapatma, 1X Hız, Tekrarlama ve Altyazı/Ses İzi satırı açılır.
+ */
 @OptIn(UnstableApi::class)
 class VideoPlayerActivity : AppCompatActivity() {
 
@@ -47,13 +55,14 @@ class VideoPlayerActivity : AppCompatActivity() {
     private var authToken: String = ""
     private var isControlsLocked: Boolean = false
     private var isRepeatOne: Boolean = false
+    private var isMuted: Boolean = false
     private var currentSpeed: Float = 1.0f
     private var preferSoftwareDecoder: Boolean = false
 
     private val progressUpdater = object : Runnable {
         override fun run() {
             val player = exoPlayer
-            if (player != null && player.isPlaying) {
+            if (player != null) {
                 val pos = player.currentPosition.coerceAtLeast(0L)
                 val dur = player.duration.coerceAtLeast(1L)
                 binding.tvCurrentTime.text = FormatUtils.formatDuration(pos)
@@ -62,7 +71,7 @@ class VideoPlayerActivity : AppCompatActivity() {
                     binding.sbVideoProgress.progress = ((pos * 1000L) / dur).toInt().coerceIn(0, 1000)
                 }
             }
-            uiHandler.postDelayed(this, 500L)
+            uiHandler.postDelayed(this, 400L)
         }
     }
 
@@ -87,8 +96,6 @@ class VideoPlayerActivity : AppCompatActivity() {
     private fun initializePlayer() {
         exoPlayer?.release()
 
-        // 1. Tüm Konteyner ve Kodekleri (MKV, WebM, MP4, AVI, MOV, FLV, TS, AV1, HEVC/H.265, VP9, AC3, EAC3, DTS, Opus, FLAC)
-        // hem donanım (MediaCodec) hem de FFmpeg yazılım çözücü ile açan RenderersFactory:
         val renderersFactory = DefaultRenderersFactory(this).apply {
             setExtensionRendererMode(
                 if (preferSoftwareDecoder) DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER
@@ -97,11 +104,9 @@ class VideoPlayerActivity : AppCompatActivity() {
             setEnableDecoderFallback(true)
         }
 
-        // 2. Tüm video uzantıları ve bozuk indeksli MKV/TS/MP4 akışları için gelişmiş ExtractorsFactory:
         val extractorsFactory = DefaultExtractorsFactory()
             .setConstantBitrateSeekingEnabled(true)
 
-        // 3. Google Drive / Dropbox / OneDrive / WebDAV akışları için Bearer Token destekli HTTP DataSource:
         val okHttpFactory = OkHttpDataSource.Factory(CloudManager.httpClient).apply {
             if (authToken.isNotBlank() && !authToken.startsWith("DEMO_")) {
                 setDefaultRequestProperties(mapOf("Authorization" to "Bearer $authToken"))
@@ -110,7 +115,6 @@ class VideoPlayerActivity : AppCompatActivity() {
         val dataSourceFactory = DefaultDataSource.Factory(this, okHttpFactory)
         val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory, extractorsFactory)
 
-        // 4. Düşük RAM ve akıcı önbellek yönetimi (cihazı ısıtmaz, bellek şişirmez):
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(15_000, 45_000, 1_500, 3_000)
             .build()
@@ -139,11 +143,12 @@ class VideoPlayerActivity : AppCompatActivity() {
                     }
 
                     override fun onIsPlayingChanged(isPlaying: Boolean) {
-                        binding.btnPlayPause.text = if (isPlaying) "⏸" else "▶"
+                        binding.btnPlayPause.setImageResource(
+                            if (isPlaying) R.drawable.ic_vp_pause else R.drawable.ic_vp_play
+                        )
                     }
 
                     override fun onPlayerError(error: PlaybackException) {
-                        // Donanım kodek hata verirse otomatik olarak FFmpeg yazılım çözücüye geç
                         if (!preferSoftwareDecoder) {
                             preferSoftwareDecoder = true
                             binding.tvCodecBadge.text = "SW-FFmpeg"
@@ -172,10 +177,31 @@ class VideoPlayerActivity : AppCompatActivity() {
             seekByDelta(10_000L, "+00:10")
         }
 
+        // Sağ alttaki Ok Butonu: 2. Kontrol Satırını (Ses, 1X, Tekrar, Altyazı) açar/kapatır (Videoda 00:07)
+        binding.btnSubtitlesAndAudio.setOnClickListener {
+            val isVisible = binding.llExtraVideoControls.visibility == View.VISIBLE
+            binding.llExtraVideoControls.visibility = if (isVisible) View.GONE else View.VISIBLE
+            binding.btnSubtitlesAndAudio.setImageResource(
+                if (isVisible) R.drawable.ic_vp_expand_up else R.drawable.ic_vp_expand_down
+            )
+        }
+
+        binding.btnMuteToggle.setOnClickListener {
+            val p = exoPlayer ?: return@setOnClickListener
+            isMuted = !isMuted
+            p.volume = if (isMuted) 0f else 1f
+            binding.btnMuteToggle.setImageResource(
+                if (isMuted) R.drawable.ic_vp_volume_off else R.drawable.ic_vp_volume_on
+            )
+        }
+
         binding.btnRepeatToggle.setOnClickListener {
             isRepeatOne = !isRepeatOne
             exoPlayer?.repeatMode = if (isRepeatOne) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
-            binding.btnRepeatToggle.alpha = if (isRepeatOne) 1.0f else 0.5f
+            binding.btnRepeatToggle.setImageResource(
+                if (isRepeatOne) R.drawable.ic_vp_repeat_one else R.drawable.ic_vp_repeat_off
+            )
+            binding.btnRepeatToggle.alpha = if (isRepeatOne) 1.0f else 0.65f
         }
 
         binding.btnPlaybackSpeed.setOnClickListener {
@@ -183,25 +209,29 @@ class VideoPlayerActivity : AppCompatActivity() {
             val nextIdx = (speeds.indexOfFirst { it == currentSpeed } + 1) % speeds.size
             currentSpeed = speeds[nextIdx]
             exoPlayer?.setPlaybackSpeed(currentSpeed)
-            binding.btnPlaybackSpeed.text = "${currentSpeed}x"
+            val label = if (currentSpeed == 1.0f) "1X" else "${currentSpeed}X"
+            binding.btnPlaybackSpeed.text = label
         }
 
-        binding.btnSubtitlesAndAudio.setOnClickListener {
+        binding.btnTrackSelector.setOnClickListener {
             showTrackInfoDialog()
         }
 
         binding.btnAspectRatio.setOnClickListener {
             val nextMode = when (binding.exoPlayerView.resizeMode) {
                 androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT -> {
-                    seekByDelta(0L, "Crop to Fit")
+                    binding.btnAspectRatio.setImageResource(R.drawable.ic_vp_resize_crop)
+                    seekByDelta(0L, "Kırparak Doldur")
                     androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
                 }
                 androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> {
-                    seekByDelta(0L, "Stretch")
+                    binding.btnAspectRatio.setImageResource(R.drawable.ic_vp_resize_stretch)
+                    seekByDelta(0L, "Ekrana Yay")
                     androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FILL
                 }
                 else -> {
-                    seekByDelta(0L, "Fit Screen")
+                    binding.btnAspectRatio.setImageResource(R.drawable.ic_vp_resize_fit)
+                    seekByDelta(0L, "Ekrana Sığdır")
                     androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
                 }
             }
@@ -243,19 +273,19 @@ class VideoPlayerActivity : AppCompatActivity() {
 
         binding.btnVideoMore.setOnClickListener { v ->
             val popup = PopupMenu(this, v)
-            popup.menu.add(0, 1, 0, "Çözücü Değiştir (Donanım HW / Yazılım FFmpeg)")
-            popup.menu.add(0, 2, 1, "Ses İzi / Altyazı Seç")
+            popup.menu.add(0, 1, 0, "Altyazı ve Ses İzi Bilgisi")
+            popup.menu.add(0, 2, 1, "Çözücü Değiştir (Donanım HW / Yazılım FFmpeg)")
             popup.menu.add(0, 3, 2, "Şununla aç (Harici Video Oynatıcı)")
             popup.setOnMenuItemClickListener { item ->
                 when (item.itemId) {
-                    1 -> {
+                    1 -> showTrackInfoDialog()
+                    2 -> {
                         preferSoftwareDecoder = !preferSoftwareDecoder
                         binding.tvCodecBadge.text = if (preferSoftwareDecoder) "SW-FFmpeg" else "HW+FFmpeg"
                         val pos = exoPlayer?.currentPosition ?: 0L
                         initializePlayer()
                         exoPlayer?.seekTo(pos)
                     }
-                    2 -> showTrackInfoDialog()
                     3 -> {
                         val fi = FileItem(
                             id = videoUrlOrPath,
@@ -277,9 +307,6 @@ class VideoPlayerActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Videodaki (01:01, 01:12, 01:14) sol/sağ çift dokunma ile "-00:10" ve "+00:10" sarma hareketi:
-     */
     private fun setupDoubleTapSeekGestures() {
         val gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
@@ -314,8 +341,10 @@ class VideoPlayerActivity : AppCompatActivity() {
     private fun seekByDelta(deltaMs: Long, label: String) {
         val player = exoPlayer ?: return
         val target = (player.currentPosition + deltaMs).coerceIn(0L, player.duration.coerceAtLeast(0L))
-        player.seekTo(target)
-        binding.tvCurrentTime.text = FormatUtils.formatDuration(target)
+        if (deltaMs != 0L) {
+            player.seekTo(target)
+            binding.tvCurrentTime.text = FormatUtils.formatDuration(target)
+        }
         binding.tvCenterSeekOverlay.text = label
         binding.tvCenterSeekOverlay.visibility = View.VISIBLE
         uiHandler.removeCallbacksAndMessages("HIDE_SEEK_LABEL")
@@ -329,8 +358,8 @@ class VideoPlayerActivity : AppCompatActivity() {
     private fun showTrackInfoDialog() {
         val p = exoPlayer ?: return
         val formatInfo = buildString {
-            append("Video Başlığı: $videoTitle\n")
-            append("Aktif Çözücü Modu: ${binding.tvCodecBadge.text}\n")
+            append("Dosya: $videoTitle\n")
+            append("Çözücü: ${binding.tvCodecBadge.text}\n")
             p.videoFormat?.let { vf ->
                 val vMime = vf.sampleMimeType ?: "Bilinmiyor"
                 append("Video Kodek: $vMime (${vf.width}x${vf.height})\n")
@@ -341,7 +370,7 @@ class VideoPlayerActivity : AppCompatActivity() {
             }
         }
         AlertDialog.Builder(this)
-            .setTitle("Kodek ve Akış Bilgisi")
+            .setTitle("Ses İzi ve Kodek Bilgisi")
             .setMessage(formatInfo)
             .setPositiveButton("Tamam", null)
             .show()

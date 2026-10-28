@@ -16,7 +16,7 @@
         app:show_buffering="never"
         app:use_controller="false" />
 
-    <!-- Orta Sarma Göstergesi (-00:10 / +00:10 / Fit Screen) -->
+    <!-- Orta Sarma / En-Boy Oranı Göstergesi (-00:10 / +00:10 / Sığdır / Doldur) -->
     <TextView
         android:id="@+id/tvCenterSeekOverlay"
         android:layout_width="wrap_content"
@@ -29,44 +29,44 @@
         android:paddingBottom="12dp"
         android:text="+00:10"
         android:textColor="#FFFFFF"
-        android:textSize="32sp"
+        android:textSize="28sp"
         android:textStyle="bold"
         android:visibility="gone" />
 
-    <!-- Orijinal 01:28 Turkuaz Dairesel Yükleme Halkası -->
+    <!-- Orijinal Turkuaz Dairesel Yükleme Halkası -->
     <ProgressBar
         android:id="@+id/pbVideoBuffering"
-        android:layout_width="56dp"
-        android:layout_height="56dp"
+        android:layout_width="54dp"
+        android:layout_height="54dp"
         android:layout_gravity="center"
-        android:indeterminateTint="#4DB6AC"
+        android:indeterminateTint="#80CBC4"
         android:visibility="gone" />
 
-    <!-- Orijinal Video Oynatıcı Arayüzü (01:29 - 01:49) -->
+    <!-- Orijinal Dosya Yöneticisi + 3.6.7 Video Oynatıcı Arayüzü (video_playback_control_view.xml birebir karşılığı) -->
     <RelativeLayout
         android:id="@+id/playerControlsOverlay"
         android:layout_width="match_parent"
         android:layout_height="match_parent">
 
-        <!-- Üst Bar: Geri Oku + Dosya Adı + Kodek Rozeti + Üç Nokta -->
+        <!-- Üst Bar: Geri Oku + Dosya Adı + Sağda Üç Nokta -->
         <LinearLayout
             android:id="@+id/topVideoBar"
             android:layout_width="match_parent"
             android:layout_height="56dp"
             android:layout_alignParentTop="true"
-            android:background="#88000000"
+            android:background="#66000000"
             android:gravity="center_vertical"
             android:orientation="horizontal"
-            android:paddingStart="8dp"
-            android:paddingEnd="8dp">
+            android:paddingStart="6dp"
+            android:paddingEnd="6dp">
 
             <ImageButton
                 android:id="@+id/btnVideoBack"
-                android:layout_width="44dp"
-                android:layout_height="44dp"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
                 android:background="?attr/selectableItemBackgroundBorderless"
                 android:contentDescription="Geri"
-                android:padding="10dp"
+                android:padding="12dp"
                 android:src="@drawable/ic_back_white" />
 
             <TextView
@@ -77,201 +77,233 @@
                 android:layout_weight="1"
                 android:ellipsize="end"
                 android:singleLine="true"
-                android:text="Video.mkv"
+                android:text="video.mp4"
                 android:textColor="#FFFFFF"
-                android:textSize="16sp"
-                android:textStyle="bold" />
+                android:textSize="17sp"
+                android:textStyle="normal" />
 
             <TextView
                 android:id="@+id/tvCodecBadge"
                 android:layout_width="wrap_content"
-                android:layout_height="26dp"
-                android:layout_marginEnd="6dp"
-                android:background="#44FFFFFF"
-                android:gravity="center"
-                android:paddingStart="8dp"
-                android:paddingEnd="8dp"
+                android:layout_height="wrap_content"
                 android:text="HW+"
-                android:textColor="#FFFFFF"
-                android:textSize="11sp"
-                android:textStyle="bold" />
+                android:visibility="gone" />
 
             <ImageButton
                 android:id="@+id/btnVideoMore"
-                android:layout_width="44dp"
-                android:layout_height="44dp"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
                 android:background="?attr/selectableItemBackgroundBorderless"
                 android:contentDescription="Seçenekler"
-                android:padding="10dp"
+                android:padding="12dp"
                 android:src="@drawable/ic_more_vert" />
         </LinearLayout>
 
-        <!-- Alt Kontrol Paneli (Orijinal 01:42 - 01:45 Beyaz İkonlu Düzen) -->
+        <!-- Alt Kontrol Paneli (Orijinal video_playback_control_view.xml) -->
         <LinearLayout
             android:id="@+id/bottomVideoBar"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_alignParentBottom="true"
-            android:background="#AA000000"
-            android:orientation="vertical"
-            android:paddingStart="12dp"
-            android:paddingTop="6dp"
-            android:paddingEnd="12dp"
-            android:paddingBottom="10dp">
+            android:orientation="vertical">
 
-            <!-- Sağ Üst Köşe Mini İkonlar: Altyazı / Ses İzi + Kilit + En-Boy Oranı -->
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="36dp"
-                android:gravity="end|center_vertical"
-                android:orientation="horizontal">
-
-                <TextView
-                    android:id="@+id/btnSubtitlesAndAudio"
-                    android:layout_width="40dp"
-                    android:layout_height="36dp"
-                    android:background="?attr/selectableItemBackgroundBorderless"
-                    android:gravity="center"
-                    android:text="💬"
-                    android:textColor="#FFFFFF"
-                    android:textSize="16sp" />
-
-                <ImageButton
-                    android:id="@+id/btnLockControls"
-                    android:layout_width="40dp"
-                    android:layout_height="36dp"
-                    android:background="?attr/selectableItemBackgroundBorderless"
-                    android:contentDescription="Kilitle"
-                    android:padding="6dp"
-                    android:src="@drawable/ic_lock_white" />
-
-                <TextView
-                    android:id="@+id/btnAspectRatio"
-                    android:layout_width="40dp"
-                    android:layout_height="36dp"
-                    android:background="?attr/selectableItemBackgroundBorderless"
-                    android:gravity="center"
-                    android:text="⤢"
-                    android:textColor="#FFFFFF"
-                    android:textSize="18sp"
-                    android:textStyle="bold" />
-            </LinearLayout>
-
-            <!-- İlerleme Çubuğu (00:21 ——●———————— 2:25:03) -->
+            <!-- İlerleme Çubuğunun Sağ Üstündeki Kilit (🔒) ve Ekran Döndürme (🔄) İkonları -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:gravity="center_vertical"
-                android:orientation="horizontal">
+                android:gravity="end|center_vertical"
+                android:orientation="horizontal"
+                android:paddingEnd="10dp"
+                android:paddingBottom="4dp">
 
-                <TextView
-                    android:id="@+id/tvCurrentTime"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="00:00"
-                    android:textColor="#FFFFFF"
-                    android:textSize="13sp" />
-
-                <SeekBar
-                    android:id="@+id/sbVideoProgress"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="6dp"
+                <ImageButton
+                    android:id="@+id/btnLockControls"
+                    android:layout_width="44dp"
+                    android:layout_height="44dp"
                     android:layout_marginEnd="6dp"
-                    android:layout_weight="1"
-                    android:max="1000"
-                    android:progress="0"
-                    android:progressTint="#80CBC4"
-                    android:thumbTint="#80CBC4" />
-
-                <TextView
-                    android:id="@+id/tvTotalDuration"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="00:00"
-                    android:textColor="#FFFFFF"
-                    android:textSize="13sp" />
-            </LinearLayout>
-
-            <!-- Alt Oynatma Kontrolleri: Tekrarla | Önceki (-10s) | Oynat/Duraklat | Sonraki (+10s) | Hız (1X) | Döndür -->
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="48dp"
-                android:layout_marginTop="2dp"
-                android:gravity="center"
-                android:orientation="horizontal">
-
-                <TextView
-                    android:id="@+id/btnRepeatToggle"
-                    android:layout_width="48dp"
-                    android:layout_height="44dp"
-                    android:alpha="0.7"
                     android:background="?attr/selectableItemBackgroundBorderless"
-                    android:gravity="center"
-                    android:text="🔁"
-                    android:textColor="#FFFFFF"
-                    android:textSize="18sp" />
-
-                <TextView
-                    android:id="@+id/btnRewind10"
-                    android:layout_width="56dp"
-                    android:layout_height="44dp"
-                    android:layout_marginStart="8dp"
-                    android:background="?attr/selectableItemBackgroundBorderless"
-                    android:gravity="center"
-                    android:text="⏮"
-                    android:textColor="#FFFFFF"
-                    android:textSize="22sp" />
-
-                <TextView
-                    android:id="@+id/btnPlayPause"
-                    android:layout_width="64dp"
-                    android:layout_height="48dp"
-                    android:layout_marginStart="12dp"
-                    android:layout_marginEnd="12dp"
-                    android:background="?attr/selectableItemBackgroundBorderless"
-                    android:gravity="center"
-                    android:text="⏸"
-                    android:textColor="#FFFFFF"
-                    android:textSize="28sp"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:id="@+id/btnForward10"
-                    android:layout_width="56dp"
-                    android:layout_height="44dp"
-                    android:layout_marginEnd="8dp"
-                    android:background="?attr/selectableItemBackgroundBorderless"
-                    android:gravity="center"
-                    android:text="⏭"
-                    android:textColor="#FFFFFF"
-                    android:textSize="22sp" />
-
-                <TextView
-                    android:id="@+id/btnPlaybackSpeed"
-                    android:layout_width="48dp"
-                    android:layout_height="44dp"
-                    android:background="?attr/selectableItemBackgroundBorderless"
-                    android:gravity="center"
-                    android:text="1X"
-                    android:textColor="#FFFFFF"
-                    android:textSize="14sp"
-                    android:textStyle="bold" />
+                    android:contentDescription="Kilitle"
+                    android:padding="10dp"
+                    android:src="@drawable/ic_vp_lock" />
 
                 <ImageButton
                     android:id="@+id/btnRotateScreen"
-                    android:layout_width="48dp"
+                    android:layout_width="44dp"
                     android:layout_height="44dp"
-                    android:layout_marginStart="4dp"
                     android:background="?attr/selectableItemBackgroundBorderless"
                     android:contentDescription="Döndür"
                     android:padding="10dp"
-                    android:src="@drawable/ic_rotate_white" />
+                    android:src="@drawable/ic_vp_rotate" />
+            </LinearLayout>
+
+            <!-- Yarı Şeffaf Alt Kutu: Seekbar + Açılır Ek Kontroller + 5 Ana Vektör Buton -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="#66000000"
+                android:orientation="vertical"
+                android:paddingStart="12dp"
+                android:paddingTop="6dp"
+                android:paddingEnd="12dp"
+                android:paddingBottom="8dp">
+
+                <!-- İlerleme Çubuğu (00:02 ——●———————— 00:06) -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="34dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:id="@+id/tvCurrentTime"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:includeFontPadding="false"
+                        android:paddingStart="2dp"
+                        android:paddingEnd="4dp"
+                        android:text="00:00"
+                        android:textColor="#FFFFFF"
+                        android:textSize="13.5sp" />
+
+                    <SeekBar
+                        android:id="@+id/sbVideoProgress"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:max="1000"
+                        android:progress="0"
+                        android:progressBackgroundTint="#66FFFFFF"
+                        android:progressTint="#80CBC4"
+                        android:thumbTint="#80CBC4" />
+
+                    <TextView
+                        android:id="@+id/tvTotalDuration"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:includeFontPadding="false"
+                        android:paddingStart="4dp"
+                        android:paddingEnd="2dp"
+                        android:text="00:00"
+                        android:textColor="#FFFFFF"
+                        android:textSize="13.5sp" />
+                </LinearLayout>
+
+                <!-- Sağ alttaki oka basınca açılan 2. Satır (Videoda 00:07-00:08: Ses/Altyazı | 1X Hız | Tekrar | Döndür) -->
+                <LinearLayout
+                    android:id="@+id/llExtraVideoControls"
+                    android:layout_width="match_parent"
+                    android:layout_height="44dp"
+                    android:gravity="center"
+                    android:orientation="horizontal"
+                    android:visibility="gone">
+
+                    <ImageButton
+                        android:id="@+id/btnMuteToggle"
+                        android:layout_width="0dp"
+                        android:layout_height="44dp"
+                        android:layout_weight="1"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="Ses"
+                        android:padding="10dp"
+                        android:src="@drawable/ic_vp_volume_on" />
+
+                    <TextView
+                        android:id="@+id/btnPlaybackSpeed"
+                        android:layout_width="0dp"
+                        android:layout_height="44dp"
+                        android:layout_weight="1"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:gravity="center"
+                        android:text="1X"
+                        android:textColor="#FFFFFF"
+                        android:textSize="15sp"
+                        android:textStyle="bold" />
+
+                    <ImageButton
+                        android:id="@+id/btnRepeatToggle"
+                        android:layout_width="0dp"
+                        android:layout_height="44dp"
+                        android:layout_weight="1"
+                        android:alpha="0.65"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="Tekrarla"
+                        android:padding="10dp"
+                        android:src="@drawable/ic_vp_repeat_off" />
+
+                    <ImageButton
+                        android:id="@+id/btnTrackSelector"
+                        android:layout_width="0dp"
+                        android:layout_height="44dp"
+                        android:layout_weight="1"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="Altyazı ve Ses İzi"
+                        android:padding="10dp"
+                        android:src="@drawable/ic_vp_subtitles" />
+                </LinearLayout>
+
+                <!-- Ana Alt Kontrol Satırı (Videoda 00:05-00:09: En-Boy Oranı [⤢] | Önceki |◀ | Oynat/Duraklat || | Sonraki ▶| | Ek Kontroller ^) -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="52dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <ImageButton
+                        android:id="@+id/btnAspectRatio"
+                        android:layout_width="0dp"
+                        android:layout_height="48dp"
+                        android:layout_weight="1"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="En-Boy Oranı"
+                        android:padding="11dp"
+                        android:src="@drawable/ic_vp_resize_fit" />
+
+                    <ImageButton
+                        android:id="@+id/btnRewind10"
+                        android:layout_width="0dp"
+                        android:layout_height="48dp"
+                        android:layout_weight="1"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="Önceki / -10 sn"
+                        android:padding="10dp"
+                        android:src="@drawable/ic_vp_prev" />
+
+                    <ImageButton
+                        android:id="@+id/btnPlayPause"
+                        android:layout_width="0dp"
+                        android:layout_height="52dp"
+                        android:layout_weight="1.2"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="Oynat / Duraklat"
+                        android:padding="6dp"
+                        android:scaleType="fitCenter"
+                        android:src="@drawable/ic_vp_pause" />
+
+                    <ImageButton
+                        android:id="@+id/btnForward10"
+                        android:layout_width="0dp"
+                        android:layout_height="48dp"
+                        android:layout_weight="1"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="Sonraki / +10 sn"
+                        android:padding="10dp"
+                        android:src="@drawable/ic_vp_next" />
+
+                    <ImageButton
+                        android:id="@+id/btnSubtitlesAndAudio"
+                        android:layout_width="0dp"
+                        android:layout_height="48dp"
+                        android:layout_weight="1"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="Diğer Kontroller"
+                        android:padding="11dp"
+                        android:src="@drawable/ic_vp_expand_up" />
+                </LinearLayout>
             </LinearLayout>
         </LinearLayout>
     </RelativeLayout>
 
-    <!-- Kilit Açma Butonu (Kilitliyken Görünür) -->
+    <!-- Kilit Açma Butonu (Kilitliyken Sağ Üst/Altta Görünür) -->
     <ImageButton
         android:id="@+id/btnUnlockOverlay"
         android:layout_width="52dp"
@@ -281,7 +313,7 @@
         android:background="#AA000000"
         android:contentDescription="Kilidi Aç"
         android:padding="12dp"
-        android:src="@drawable/ic_lock_white"
+        android:src="@drawable/ic_vp_lock"
         android:visibility="gone" />
 
 </FrameLayout>

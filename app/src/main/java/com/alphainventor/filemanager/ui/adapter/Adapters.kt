@@ -1,9 +1,18 @@
 package com.alphainventor.filemanager.ui.adapter
 
 import android.graphics.Color
+import android.text.SpannableString
+import android.text.Spanned
+import android.text.style.BackgroundColorSpan
+import android.text.style.ForegroundColorSpan
+import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.FrameLayout
+import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.TextView
 import androidx.recyclerview.widget.RecyclerView
 import com.alphainventor.filemanager.R
 import com.alphainventor.filemanager.databinding.ItemDrawerNavBinding
@@ -17,7 +26,7 @@ import com.alphainventor.filemanager.util.ThumbnailCacheManager
 import java.io.File
 
 /**
- * 1. ANA EKRAN KATEGORİ IZGARASI (Orijinal DesktopGridView & desktop_item.xml birebir karşılığı)
+ * 1. ANA EKRAN KATEGORİ IZGARASI (Orijinal DesktopGridView & desktop2_item.xml birebir karşılığı)
  */
 class HomeGridAdapter(
     private var items: List<HomeCategoryItem>,
@@ -47,19 +56,21 @@ class HomeGridAdapter(
             val ctx = root.context
             val density = ctx.resources.displayMetrics.density
             tvCategoryTitle.text = item.title
+            tvCategoryTitle.textSize = 13.5f
             tvCategoryTitle.setTextColor(ThemeManager.getPrimaryTextColor(ctx))
 
             tvCategorySubtitle.text = item.subtitle
+            tvCategorySubtitle.textSize = 11.5f
             tvCategorySubtitle.setTextColor(ThemeManager.getSecondaryTextColor(ctx))
 
-            val iconFrame = ivCategoryIcon.parent as? android.widget.FrameLayout
-            val boxSize = (64 * density).toInt()
+            val iconFrame = ivCategoryIcon.parent as? FrameLayout
+            // Orijinal APK'daki (00:01) büyük ve dolgun simge boyutu (74dp)
+            val boxSize = (74 * density).toInt()
             iconFrame?.layoutParams = iconFrame?.layoutParams?.apply {
                 width = boxSize
                 height = boxSize
             }
 
-            // Eski yerleşimdeki mini progress bar varsa gizle
             if (iconFrame != null) {
                 for (i in 0 until iconFrame.childCount) {
                     val ch = iconFrame.getChildAt(i)
@@ -71,7 +82,7 @@ class HomeGridAdapter(
                 }
                 if (dynamicPieView == null) {
                     val pv = com.alphainventor.filemanager.widget.PieProgressView(ctx).apply {
-                        layoutParams = android.widget.FrameLayout.LayoutParams(
+                        layoutParams = FrameLayout.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT,
                             ViewGroup.LayoutParams.MATCH_PARENT
                         )
@@ -89,11 +100,13 @@ class HomeGridAdapter(
                     ivCategoryIcon.visibility = View.GONE
                     dynamicPieView?.visibility = View.VISIBLE
                     dynamicPieView?.progressPercent = item.piePercent
+                    dynamicPieView?.invalidate()
                 }
                 item.type == HomeCategoryType.MAIN_STORAGE ||
                 item.type == HomeCategoryType.SD_CARD ||
                 item.type == HomeCategoryType.USB_STORAGE ||
-                item.type == HomeCategoryType.DOWNLOADS -> {
+                item.type == HomeCategoryType.DOWNLOADS ||
+                item.type == HomeCategoryType.RECYCLE_BIN -> {
                     iconFrame?.background = null
                     iconFrame?.setPadding(0, 0, 0, 0)
                     dynamicPieView?.visibility = View.GONE
@@ -106,7 +119,7 @@ class HomeGridAdapter(
                 }
                 else -> {
                     iconFrame?.background = ThemeManager.createHomeTileSquircle(ctx)
-                    val pad = (12 * density).toInt()
+                    val pad = (13 * density).toInt()
                     iconFrame?.setPadding(pad, pad, pad, pad)
                     dynamicPieView?.visibility = View.GONE
                     ivCategoryIcon.visibility = View.VISIBLE
@@ -118,7 +131,7 @@ class HomeGridAdapter(
                 }
             }
 
-            // Ana bellek yatay doluluk çubuğu kontrolü
+            // Ana bellek ve SD kart yatay mavi doluluk çubuğu kontrolü
             var storageBar: android.widget.ProgressBar? = null
             for (i in 0 until root.childCount) {
                 val ch = root.getChildAt(i)
@@ -129,8 +142,8 @@ class HomeGridAdapter(
             }
             if (storageBar == null && item.showStorageBar) {
                 val pb = android.widget.ProgressBar(ctx, null, android.R.attr.progressBarStyleHorizontal).apply {
-                    layoutParams = android.widget.LinearLayout.LayoutParams(
-                        (76 * density).toInt(),
+                    layoutParams = LinearLayout.LayoutParams(
+                        (82 * density).toInt(),
                         (4 * density).toInt()
                     ).apply {
                         topMargin = (3 * density).toInt()
@@ -160,7 +173,10 @@ class HomeGridAdapter(
 }
 
 /**
- * 2. DOSYA VE KLASÖR LİSTESİ / IZGARASI ADAPTER'I (Orijinal filelist_item.xml & file_media_grid_item.xml)
+ * 2. DOSYA, KLASÖR KUTUCUĞU VE ARAMA SONUÇLARI ADAPTER'I
+ * - Arama modunda (highlightQuery doluysa) dosya adındaki eşleşen kelimeleri sarı fosforlu (#FFF59D) vurgular.
+ * - Medya Kategorilerinde (Videolar, Görüntüler, Ses) Klasör Kutucuklarını ("InstaEclipse (64)", "Movies (6)")
+ *   ilk medyanın küçük resmi ve sağ alt kategori rozetiyle gösterir.
  */
 class FileListAdapter(
     private val onItemClick: (FileItem) -> Unit,
@@ -177,6 +193,11 @@ class FileListAdapter(
     private val selectedIds = HashSet<String>()
     var selectionMode: Boolean = false
         private set
+
+    var highlightQuery: String = ""
+        set(value) {
+            field = value.trim()
+        }
 
     var isGridMode: Boolean = false
         set(value) {
@@ -241,12 +262,37 @@ class FileListAdapter(
         }
     }
 
+    private fun buildHighlightedText(fullText: String, query: String): CharSequence {
+        if (query.isEmpty()) return fullText
+        val spannable = SpannableString(fullText)
+        val lowerFull = fullText.lowercase()
+        val lowerQ = query.lowercase()
+        var startIdx = lowerFull.indexOf(lowerQ)
+        while (startIdx >= 0) {
+            val endIdx = (startIdx + lowerQ.length).coerceAtMost(fullText.length)
+            spannable.setSpan(
+                BackgroundColorSpan(Color.parseColor("#FFF59D")),
+                startIdx,
+                endIdx,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+            spannable.setSpan(
+                ForegroundColorSpan(Color.parseColor("#000000")),
+                startIdx,
+                endIdx,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+            startIdx = lowerFull.indexOf(lowerQ, endIdx)
+        }
+        return spannable
+    }
+
     private fun resolveOriginalFileIcon(item: FileItem): Int {
         if (item.isDirectory) {
             val lower = item.name.lowercase()
             return when {
                 lower == "download" || lower == "downloads" || lower == "indirilenler" -> R.drawable.icon_folder_download
-                lower == "dcim" || lower == "camera" -> R.drawable.icon_folder_camera
+                lower == "dcim" || lower == "camera" || lower == "kamera" -> R.drawable.icon_folder_camera
                 item.childCount == 0 -> R.drawable.icon_folder_empty
                 else -> R.drawable.icon_folder_full
             }
@@ -287,22 +333,34 @@ class FileListAdapter(
                 tvSectionHeader.visibility = View.GONE
             }
             tvIconBadge.visibility = View.GONE
-            tvFileName.text = item.name
             tvFileName.setTextColor(primaryColor)
+            tvFileName.text = buildHighlightedText(item.name, highlightQuery)
 
             tvFileDate.text = FormatUtils.formatDate(item.lastModified)
             tvFileDate.setTextColor(secondaryColor)
 
             val baseSub = if (item.isDirectory) {
-                if (item.childCount >= 0) "${item.childCount} öğe" else "- öğe"
+                if (item.childCount >= 0) "${item.childCount} öğe" else "Klasör"
             } else {
                 FormatUtils.formatSize(item.size)
             }
 
             if (showAccountOwnerBadge && item.accountEmailOrLabel.isNotBlank()) {
-                tvFileSubInfo.text = "☁ ${item.providerName} (${item.accountEmailOrLabel})  •  $baseSub"
-                tvFileSubInfo.setTextColor(Color.parseColor("#008578"))
+                // Orijinal Arama Sonucu formatı (Screenshot_20261028_124124_File Manager +.png):
+                // Satır 2: 486 MB
+                // Satır 3: /Klasör_Yolu/ • damovie355@gmail.com
+                tvFileSubInfo.isSingleLine = false
+                tvFileSubInfo.maxLines = 2
+                val folderDisplay = if (item.parentId.isNotBlank() && item.parentId != "root") {
+                    if (item.parentId.startsWith("/")) item.parentId else "/${item.parentId}/"
+                } else {
+                    "/${item.providerName}/"
+                }
+                tvFileSubInfo.text = "$baseSub\n$folderDisplay • ${item.accountEmailOrLabel}"
+                tvFileSubInfo.setTextColor(secondaryColor)
             } else {
+                tvFileSubInfo.isSingleLine = true
+                tvFileSubInfo.maxLines = 1
                 tvFileSubInfo.text = baseSub
                 tvFileSubInfo.setTextColor(secondaryColor)
             }
@@ -315,7 +373,6 @@ class FileListAdapter(
             val iconRes = resolveOriginalFileIcon(item)
             ivFileIcon.setImageResource(iconRes)
 
-            // Yerel medya dosyaları için küçük resim (thumbnail) yükle
             if (!item.isDirectory && item.sourceType == FileSourceType.LOCAL) {
                 val f = File(item.path)
                 if (f.exists()) {
@@ -352,15 +409,23 @@ class FileListAdapter(
     inner class GridVH(private val binding: ItemFileGridBinding) : RecyclerView.ViewHolder(binding.root) {
         fun bind(item: FileItem) = with(binding) {
             val ctx = root.context
-            tvGridFileName.text = if (item.isDirectory && item.childCount >= 0) {
+            val isDark = ThemeManager.isDarkOrAmoled(ctx)
+            val thumbFrame = ivGridThumb.parent as? FrameLayout
+            thumbFrame?.setBackgroundColor(
+                if (isDark) Color.parseColor("#1E1E1E") else Color.parseColor("#F2F2F2")
+            )
+
+            val label = if (item.isDirectory && item.childCount >= 0) {
                 "${item.name} (${item.childCount})"
             } else {
                 item.name
             }
             tvGridFileName.setTextColor(ThemeManager.getPrimaryTextColor(ctx))
+            tvGridFileName.text = buildHighlightedText(label, highlightQuery)
 
             val iconRes = resolveOriginalFileIcon(item)
             ivGridThumb.tag = item.path
+            ivGridThumb.scaleType = ImageView.ScaleType.CENTER_CROP
             ivGridThumb.setImageResource(iconRes)
             ivGridPlayOverlay.visibility = if (item.isVideo) View.VISIBLE else View.GONE
 
@@ -374,18 +439,24 @@ class FileListAdapter(
                     }
                 }
             } else if (item.isDirectory && item.sourceType == FileSourceType.LOCAL) {
-                // Klasör içindeki ilk video/görselin önizlemesini göster (videodaki 01:08 Klasör ızgarası gibi)
-                val dir = File(item.path)
-                val firstMedia = dir.listFiles()?.firstOrNull { child ->
-                    child.isFile && (child.extension.lowercase() in FileItem.VIDEO_EXTENSIONS || child.extension.lowercase() in FileItem.IMAGE_EXTENSIONS)
-                }
-                if (firstMedia != null) {
-                    ivGridThumb.tag = firstMedia.absolutePath
-                    if (firstMedia.extension.lowercase() in FileItem.IMAGE_EXTENSIONS) {
-                        ThumbnailCacheManager.loadImageThumbnail(firstMedia, ivGridThumb, iconRes)
-                    } else {
-                        ThumbnailCacheManager.loadVideoThumbnail(firstMedia, ivGridThumb, iconRes)
+                val previewFile = if (item.firstMediaPreviewPath.isNotBlank()) {
+                    File(item.firstMediaPreviewPath).takeIf { it.exists() }
+                } else {
+                    File(item.path).listFiles()?.firstOrNull { child ->
+                        child.isFile && (child.extension.lowercase() in FileItem.VIDEO_EXTENSIONS || child.extension.lowercase() in FileItem.IMAGE_EXTENSIONS)
                     }
+                }
+                if (previewFile != null) {
+                    ivGridThumb.tag = previewFile.absolutePath
+                    if (previewFile.extension.lowercase() in FileItem.IMAGE_EXTENSIONS) {
+                        ThumbnailCacheManager.loadImageThumbnail(previewFile, ivGridThumb, iconRes)
+                    } else if (previewFile.extension.lowercase() in FileItem.VIDEO_EXTENSIONS) {
+                        ThumbnailCacheManager.loadVideoThumbnail(previewFile, ivGridThumb, iconRes)
+                    } else {
+                        ivGridThumb.scaleType = ImageView.ScaleType.FIT_CENTER
+                    }
+                } else {
+                    ivGridThumb.scaleType = ImageView.ScaleType.FIT_CENTER
                 }
             }
 
@@ -411,7 +482,8 @@ class FileListAdapter(
 }
 
 /**
- * 3. BULUT HESAPLARI LİSTESİ ADAPTER'I (Orijinal sublocation_item.xml ile birebir aynı)
+ * 3. BULUT HESAPLARI IZGARASI ADAPTER'I (Orijinal Bulut ekranındaki 3 sütunlu Google Drive görünümü:
+ *    Screenshot_20261028_124104_File Manager +.png & burada Google Drive hesap ekleme...mp4 00:01)
  */
 class CloudAccountsAdapter(
     private var accounts: List<CloudAccount>,
@@ -431,8 +503,49 @@ class CloudAccountsAdapter(
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): CloudVH {
-        val binding = ItemFileRowBinding.inflate(LayoutInflater.from(parent.context), parent, false)
-        return CloudVH(binding)
+        val ctx = parent.context
+        val density = ctx.resources.displayMetrics.density
+        val root = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            layoutParams = RecyclerView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+            val p = (10 * density).toInt()
+            setPadding(p, p, p, p)
+        }
+        val iv = ImageView(ctx).apply {
+            val sz = (58 * density).toInt()
+            layoutParams = LinearLayout.LayoutParams(sz, sz)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+        }
+        val tvTitle = TextView(ctx).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = (4 * density).toInt()
+            }
+            gravity = Gravity.CENTER
+            textSize = 13.5f
+            isSingleLine = true
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        val tvSub = TextView(ctx).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+            gravity = Gravity.CENTER
+            textSize = 11.5f
+            isSingleLine = true
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        root.addView(iv)
+        root.addView(tvTitle)
+        root.addView(tvSub)
+        return CloudVH(root, iv, tvTitle, tvSub)
     }
 
     override fun getItemCount(): Int = accounts.size
@@ -441,19 +554,19 @@ class CloudAccountsAdapter(
         holder.bind(accounts[position])
     }
 
-    inner class CloudVH(private val binding: ItemFileRowBinding) : RecyclerView.ViewHolder(binding.root) {
-        fun bind(acc: CloudAccount) = with(binding) {
+    inner class CloudVH(
+        private val root: LinearLayout,
+        private val ivIcon: ImageView,
+        private val tvTitle: TextView,
+        private val tvSub: TextView
+    ) : RecyclerView.ViewHolder(root) {
+        fun bind(acc: CloudAccount) {
             val ctx = root.context
-            tvFileName.text = acc.provider.displayName
-            tvFileName.setTextColor(ThemeManager.getPrimaryTextColor(ctx))
+            tvTitle.text = if (isEditMode) "${acc.provider.displayName} ✎" else acc.provider.displayName
+            tvTitle.setTextColor(ThemeManager.getPrimaryTextColor(ctx))
 
-            tvFileSubInfo.text = acc.emailOrName
-            tvFileSubInfo.setTextColor(ThemeManager.getSecondaryTextColor(ctx))
-
-            // Orijinal Bulut listesinde (videodaki 00:07-00:10) sağ tarafta kota yazısı yoktur, sadece düzenleme modunda üç nokta çıkar
-            tvFileDate.text = if (isEditMode) "⋮" else ""
-            tvFileDate.setTextColor(ThemeManager.getSecondaryTextColor(ctx))
-            rowDivider.setBackgroundColor(ThemeManager.getDividerColor(ctx))
+            tvSub.text = acc.emailOrName
+            tvSub.setTextColor(ThemeManager.getSecondaryTextColor(ctx))
 
             val iconRes = when (acc.provider) {
                 CloudProviderType.GOOGLE_DRIVE -> R.drawable.cloud_icon_googledrive
@@ -463,9 +576,7 @@ class CloudAccountsAdapter(
                 CloudProviderType.NEXTCLOUD -> R.drawable.ic_cloud_nextcloud
                 CloudProviderType.YANDEX -> R.drawable.cloud_icon_yandex
             }
-            ivFileIcon.setImageResource(iconRes)
-            ivPlayOverlay.visibility = View.GONE
-            cbSelect.visibility = View.GONE
+            ivIcon.setImageResource(iconRes)
 
             root.setOnClickListener { onAccountClick(acc) }
             root.setOnLongClickListener {
@@ -534,7 +645,7 @@ class RemoteAccountsAdapter(
 }
 
 /**
- * 5. SOL ÇEKMECE (DRAWER) LİSTESİ ADAPTER'I (Orijinal nav_fixed_list_item & nav_bookmarklist_item)
+ * 5. SOL ÇEKMECE (DRAWER) LİSTESİ ADAPTER'I
  */
 data class DrawerEntry(
     val id: String,
@@ -569,7 +680,7 @@ class DrawerNavAdapter(
     inner class DrawerVH(private val binding: ItemDrawerNavBinding) : RecyclerView.ViewHolder(binding.root) {
         fun bind(entry: DrawerEntry) = with(binding) {
             val ctx = root.context
-            tvDrawerTitle.text = entry.title
+            tvDrawerTitle.text = if (entry.subtitle.isNotBlank()) "${entry.title}\n${entry.subtitle}" else entry.title
             tvDrawerTitle.setTextColor(ThemeManager.getPrimaryTextColor(ctx))
             tvDrawerRightBadge.text = entry.rightBadge
             tvDrawerRightBadge.setTextColor(ThemeManager.getSecondaryTextColor(ctx))

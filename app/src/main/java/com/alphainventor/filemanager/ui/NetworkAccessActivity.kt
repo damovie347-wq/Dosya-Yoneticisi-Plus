@@ -10,6 +10,11 @@ import com.alphainventor.filemanager.service.FtpServerService
 import com.alphainventor.filemanager.theme.ThemeManager
 import kotlin.random.Random
 
+/**
+ * Orijinal Dosya Yöneticisi + 3.6.7 Ağdan Erişim (FTP Sunucusu - fragment_server.xml) Ekranı:
+ * - AMOLED, Koyu ve Açık temada kart ve metin kontrastını otomatik optimize eder.
+ * - Hizmet başlatıldığında ftp://IP:PORT adresini, kullanıcı adını (pc / anonymous) ve şifreyi net gösterir.
+ */
 class NetworkAccessActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityNetworkAccessBinding
@@ -19,16 +24,22 @@ class NetworkAccessActivity : AppCompatActivity() {
         binding = ActivityNetworkAccessBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        val primaryColor = ThemeManager.getPrimaryTextColor(this)
+        val secondaryColor = ThemeManager.getSecondaryTextColor(this)
+
         ThemeManager.applyWindowColors(this, binding.networkAccessRoot, binding.networkToolbar)
-        binding.tvFtpStatusInfo.setTextColor(ThemeManager.getPrimaryTextColor(this))
-        binding.etFtpPort.setTextColor(ThemeManager.getPrimaryTextColor(this))
-        binding.etFtpPassword.setTextColor(ThemeManager.getPrimaryTextColor(this))
+        binding.networkCard.setBackgroundColor(ThemeManager.getCardColor(this))
+        binding.tvFtpStatusInfo.setTextColor(primaryColor)
+        binding.etFtpPort.setTextColor(primaryColor)
+        binding.etFtpPassword.setTextColor(primaryColor)
+        binding.cbRandomPassword.setTextColor(secondaryColor)
+        binding.cbShowHiddenFtp.setTextColor(secondaryColor)
 
         binding.btnNetworkBack.setOnClickListener { finish() }
 
         binding.cbRandomPassword.setOnCheckedChangeListener { _, isChecked ->
             if (isChecked) {
-                binding.etFtpPassword.setText(Random.nextInt(1000, 9999).toString())
+                binding.etFtpPassword.setText(Random.nextInt(100000, 999999).toString())
                 binding.etFtpPassword.isEnabled = false
             } else {
                 binding.etFtpPassword.isEnabled = true
@@ -66,7 +77,8 @@ class NetworkAccessActivity : AppCompatActivity() {
     private fun updateServerUi(running: Boolean, port: Int = 7552) {
         if (running) {
             val ip = FtpServerService.getLocalIpAddress()
-            binding.tvFtpStatusInfo.text = "Hizmet çalışıyor. Bilgisayarınızdan veya başka bir cihazdan şu adresi girin:"
+            val pass = binding.etFtpPassword.text?.toString().orEmpty()
+            binding.tvFtpStatusInfo.text = "Hizmet çalışıyor\nKullanıcı adı: pc   •   Şifre: ${pass.ifEmpty { "(Yok)" }}"
             binding.tvFtpUrlBox.visibility = View.VISIBLE
             binding.tvFtpUrlBox.text = "ftp://$ip:$port"
             binding.btnToggleFtpServer.text = "DURDUR"
