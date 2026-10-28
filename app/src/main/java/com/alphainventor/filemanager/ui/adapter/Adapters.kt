@@ -41,51 +41,117 @@ class HomeGridAdapter(
     }
 
     inner class HomeVH(private val binding: ItemHomeGridBinding) : RecyclerView.ViewHolder(binding.root) {
+        private var dynamicPieView: com.alphainventor.filemanager.widget.PieProgressView? = null
+
         fun bind(item: HomeCategoryItem) = with(binding) {
             val ctx = root.context
+            val density = ctx.resources.displayMetrics.density
             tvCategoryTitle.text = item.title
             tvCategoryTitle.setTextColor(ThemeManager.getPrimaryTextColor(ctx))
 
             tvCategorySubtitle.text = item.subtitle
             tvCategorySubtitle.setTextColor(ThemeManager.getSecondaryTextColor(ctx))
 
+            val iconFrame = ivCategoryIcon.parent as? android.widget.FrameLayout
+            val boxSize = (64 * density).toInt()
+            iconFrame?.layoutParams = iconFrame?.layoutParams?.apply {
+                width = boxSize
+                height = boxSize
+            }
+
+            // Eski yerleşimdeki mini progress bar varsa gizle
+            if (iconFrame != null) {
+                for (i in 0 until iconFrame.childCount) {
+                    val ch = iconFrame.getChildAt(i)
+                    if (ch is android.widget.ProgressBar) {
+                        ch.visibility = View.GONE
+                    } else if (ch is com.alphainventor.filemanager.widget.PieProgressView) {
+                        dynamicPieView = ch
+                    }
+                }
+                if (dynamicPieView == null) {
+                    val pv = com.alphainventor.filemanager.widget.PieProgressView(ctx).apply {
+                        layoutParams = android.widget.FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                        visibility = View.GONE
+                    }
+                    iconFrame.addView(pv)
+                    dynamicPieView = pv
+                }
+            }
+
             when {
                 item.showPieChart -> {
-                    // Bellek Analizi: Orijinal PieProgress görünümü (Yuvarlak pasta dilimi)
-                    iconSquircleContainer.background = null
-                    iconSquircleContainer.setPadding(0, 0, 0, 0)
+                    iconFrame?.background = null
+                    iconFrame?.setPadding(0, 0, 0, 0)
                     ivCategoryIcon.visibility = View.GONE
-                    pieStorageAnalysis.visibility = View.VISIBLE
-                    pieStorageAnalysis.progressPercent = item.piePercent
+                    dynamicPieView?.visibility = View.VISIBLE
+                    dynamicPieView?.progressPercent = item.piePercent
                 }
                 item.type == HomeCategoryType.MAIN_STORAGE ||
                 item.type == HomeCategoryType.SD_CARD ||
                 item.type == HomeCategoryType.USB_STORAGE ||
                 item.type == HomeCategoryType.DOWNLOADS -> {
-                    // Ana bellek ve İndirilenler: Orijinal 3D yüksek çözünürlüklü PNG ikonları (kutu çerçevesiz)
-                    iconSquircleContainer.background = null
-                    iconSquircleContainer.setPadding(0, 0, 0, 0)
-                    pieStorageAnalysis.visibility = View.GONE
+                    iconFrame?.background = null
+                    iconFrame?.setPadding(0, 0, 0, 0)
+                    dynamicPieView?.visibility = View.GONE
                     ivCategoryIcon.visibility = View.VISIBLE
+                    ivCategoryIcon.layoutParams = ivCategoryIcon.layoutParams?.apply {
+                        width = ViewGroup.LayoutParams.MATCH_PARENT
+                        height = ViewGroup.LayoutParams.MATCH_PARENT
+                    }
                     ivCategoryIcon.setImageResource(item.iconRes)
                 }
                 else -> {
-                    // Görüntüler, Ses, Videolar, Belgeler, Uygulamalar, Yeni Dosyalar, Bulut, Uzak, Ağdan erişim:
-                    // Orijinal bg_desktop_shape.xml (beyaz dolgulu, #B8B8B8 ince kenarlıklı squircle) içinde renkli vektör ikon
-                    iconSquircleContainer.background = ThemeManager.createHomeTileSquircle(ctx)
-                    val pad = (12 * ctx.resources.displayMetrics.density).toInt()
-                    iconSquircleContainer.setPadding(pad, pad, pad, pad)
-                    pieStorageAnalysis.visibility = View.GONE
+                    iconFrame?.background = ThemeManager.createHomeTileSquircle(ctx)
+                    val pad = (12 * density).toInt()
+                    iconFrame?.setPadding(pad, pad, pad, pad)
+                    dynamicPieView?.visibility = View.GONE
                     ivCategoryIcon.visibility = View.VISIBLE
+                    ivCategoryIcon.layoutParams = ivCategoryIcon.layoutParams?.apply {
+                        width = ViewGroup.LayoutParams.MATCH_PARENT
+                        height = ViewGroup.LayoutParams.MATCH_PARENT
+                    }
                     ivCategoryIcon.setImageResource(item.iconRes)
                 }
             }
 
+            // Ana bellek yatay doluluk çubuğu kontrolü
+            var storageBar: android.widget.ProgressBar? = null
+            for (i in 0 until root.childCount) {
+                val ch = root.getChildAt(i)
+                if (ch is android.widget.ProgressBar) {
+                    storageBar = ch
+                    break
+                }
+            }
+            if (storageBar == null && item.showStorageBar) {
+                val pb = android.widget.ProgressBar(ctx, null, android.R.attr.progressBarStyleHorizontal).apply {
+                    layoutParams = android.widget.LinearLayout.LayoutParams(
+                        (76 * density).toInt(),
+                        (4 * density).toInt()
+                    ).apply {
+                        topMargin = (3 * density).toInt()
+                    }
+                    max = 100
+                    progressDrawable = androidx.core.content.ContextCompat.getDrawable(ctx, R.drawable.progress_storage_bar)
+                }
+                val titleIdx = root.indexOfChild(tvCategoryTitle)
+                if (titleIdx >= 0) {
+                    root.addView(pb, titleIdx + 1)
+                } else {
+                    root.addView(pb)
+                }
+                storageBar = pb
+            }
+
             if (item.showStorageBar && item.totalBytes > 0L) {
-                pbStorageUsage.visibility = View.VISIBLE
-                pbStorageUsage.progress = ((item.usedBytes.toDouble() / item.totalBytes.toDouble()) * 100.0).toInt().coerceIn(0, 100)
+                storageBar?.visibility = View.VISIBLE
+                storageBar?.progress = ((item.usedBytes.toDouble() / item.totalBytes.toDouble()) * 100.0).toInt().coerceIn(0, 100)
             } else {
-                pbStorageUsage.visibility = View.GONE
+                storageBar?.visibility = View.GONE
             }
 
             root.setOnClickListener { onClick(item) }
