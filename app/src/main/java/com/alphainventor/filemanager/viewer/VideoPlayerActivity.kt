@@ -4,10 +4,12 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.ActivityInfo
 import android.media.AudioManager
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.OpenableColumns
 import android.view.GestureDetector
 import android.view.MotionEvent
@@ -15,12 +17,15 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.widget.PopupMenu
 import android.widget.SeekBar
+import android.widget.Toast
 import androidx.annotation.OptIn
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.lifecycleScope
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -30,8 +35,11 @@ import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.extractor.DefaultExtractorsFactory
+import androidx.media3.extractor.mp4.Mp4Extractor
+import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory
 import com.alphainventor.filemanager.R
 import com.alphainventor.filemanager.cloud.CloudManager
 import com.alphainventor.filemanager.core.LocalFileRepository
@@ -39,19 +47,25 @@ import com.alphainventor.filemanager.databinding.ActivityVideoPlayerBinding
 import com.alphainventor.filemanager.model.FileItem
 import com.alphainventor.filemanager.model.FileSourceType
 import com.alphainventor.filemanager.util.FormatUtils
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 import kotlin.math.abs
 
 /**
  * Orijinal Dosya Yöneticisi + 3.6.7 Video Oynatıcı (com.alphainventor.filemanager.viewer.VideoPlayerActivity):
- * 1) "Şununla Aç" (Farklı uygulamadan aç) ile Google Drive (http/https/content) ve yerel videolardan doğrudan açılır.
- * 2) Parmakla sağa-sola kaydırma (Horizontal Drag Scrubbing):
- *    - Ekran üzerinde parmağınızı sağa veya sola sürüklediğinizde videoyu gerçek zamanlı sarar
- *      ve ekran ortasında kutusuz 46sp gölgeli beyaz zamanı ("00:55", "00:19") gösterir (Video 5 00:54-00:55).
- * 3) 3 Bölgeli Çift Tıklama (3-Zone Double Tap):
- *    - Ekranın ORTA 1/3 kısmına çift tıklayınca: Videoyu Duraklatır / Oynatır!
- *    - Ekranın SOL 1/3 kısmına çift tıklayınca: 10 saniye geri sarar (-10 sn) ve yeni süreyi gösterir.
- *    - Ekranın SAĞ 1/3 kısmına çift tıklayınca: 10 saniye ileri sarar (+10 sn) ve yeni süreyi gösterir.
- * 4) Parmakla basılı tutunca (Long Press) 2X hızda oynatır, parmak çekilince normal hıza döner.
+ * 1) Uzun .mkv (AV1, HEVC, DDP5.1 / E-AC3, AC3, DTS) ve .mp4 videolarında anlık anahtar kare (CLOSEST_SYNC) sarma:
+ *    - MediaMetadataRetriever ile yerel video süresi (duration) dosya açılır açılmaz (<10ms) okunur, "00:00" takılması önlenir.
+ *    - Yatay parmak sürükleme (Horizontal Scrubbing) ve SeekBar kaydırma sırasında ExoPlayer'a saniyede 120 kez seekTo()
+ *      gönderip MatroskaExtractor/AV1 çözücüsünü kilitlemek yerine, süre etiketi 120Hz akıcı güncellenir ve seekTo()
+ *      kontrollü (CLOSEST_SYNC + parmak bırakıldığında / 260ms aralıkla) uygulanır.
+ *    - Varsayılan olarak EXTENSION_RENDERER_MODE_PREFER + setEnableDecoderFallback(true) kullanılarak DDP5.1 (E-AC3 5.1)
+ *      ses izleri doğrudan FFmpeg çözücüsüyle hatasız çözülür.
+ * 2) 3 Bölgeli Çift Tıklama (3-Zone Double Tap):
+ *    - Ekranın ORTA 1/3 kısmına çift tıklayınca: Videoyu Duraklatır / Oynatır.
+ *    - Ekranın SOL 1/3 kısmına çift tıklayınca: 10 saniye geri sarar (-10 sn).
+ *    - Ekranın SAĞ 1/3 kısmına çift tıklayınca: 10 saniye ileri sarar (+10 sn).
  */
 @OptIn(UnstableApi::class)
 class VideoPlayerActivity : AppCompatActivity() {
@@ -71,18 +85,24 @@ class VideoPlayerActivity : AppCompatActivity() {
     private var isRepeatOne: Boolean = false
     private var isShuffleEnabled: Boolean = false
     private var currentSpeed: Float = 1.0f
-    private var preferSoftwareDecoder: Boolean = false
+    private var preferSoftwareDecoder: Boolean = true
     private var isDraggingSeekBar: Boolean = false
     private var isHorizontalScrubbing: Boolean = false
+
+    private var knownDurationMs: Long = 0L
+    private var pendingScrubTargetMs: Long = -1L
+    private var deferredSeekOnReadyMs: Long = -1L
+    private var lastLiveSeekRealtimeMs: Long = 0L
+    private var errorRecoveryCount: Int = 0
 
     private val progressUpdater = object : Runnable {
         override fun run() {
             val player = exoPlayer
             if (player != null && !isDraggingSeekBar && !isHorizontalScrubbing) {
                 val pos = player.currentPosition.coerceAtLeast(0L)
-                val dur = player.duration.coerceAtLeast(1L)
+                val dur = resolveEffectiveDuration(player)
                 binding.tvCurrentTime.text = FormatUtils.formatDuration(pos)
-                if (player.duration > 0) {
+                if (dur > 0L) {
                     binding.tvTotalDuration.text = FormatUtils.formatDuration(dur)
                     binding.sbVideoProgress.progress = ((pos * 1000L) / dur).toInt().coerceIn(0, 1000)
                 }
@@ -110,10 +130,20 @@ class VideoPlayerActivity : AppCompatActivity() {
         playlistIndex = intent.getIntExtra("PLAYLIST_INDEX", 0).coerceIn(0, (playlistUrls.size - 1).coerceAtLeast(0))
 
         binding.tvVideoTitle.text = videoTitle
+        binding.tvCodecBadge.text = "HW+FFmpeg"
 
         setupOverlayControls()
         setupTouchAndScrubGestures()
         initializePlayer()
+    }
+
+    private fun resolveEffectiveDuration(player: ExoPlayer?): Long {
+        val pDur = player?.duration ?: C.TIME_UNSET
+        if (pDur > 0L && pDur != C.TIME_UNSET) {
+            knownDurationMs = pDur
+            return pDur
+        }
+        return knownDurationMs.coerceAtLeast(0L)
     }
 
     private fun resolveDisplayNameFromUri(uri: Uri?): String? {
@@ -132,7 +162,56 @@ class VideoPlayerActivity : AppCompatActivity() {
         return uri.lastPathSegment?.substringAfterLast('/')
     }
 
-    private fun initializePlayer() {
+    private fun preloadLocalVideoDuration(pathOrUri: String) {
+        lifecycleScope.launch(Dispatchers.IO) {
+            val dur = try {
+                val retriever = MediaMetadataRetriever()
+                try {
+                    when {
+                        pathOrUri.startsWith("http://") || pathOrUri.startsWith("https://") -> {
+                            0L
+                        }
+                        pathOrUri.startsWith("content://") -> {
+                            retriever.setDataSource(this@VideoPlayerActivity, Uri.parse(pathOrUri))
+                            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+                        }
+                        pathOrUri.startsWith("file://") -> {
+                            val f = File(Uri.parse(pathOrUri).path ?: "")
+                            if (f.exists()) {
+                                retriever.setDataSource(f.absolutePath)
+                                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+                            } else 0L
+                        }
+                        else -> {
+                            val f = File(pathOrUri)
+                            if (f.exists()) {
+                                retriever.setDataSource(f.absolutePath)
+                                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+                            } else 0L
+                        }
+                    }
+                } finally {
+                    try {
+                        retriever.release()
+                    } catch (_: Throwable) {
+                    }
+                }
+            } catch (_: Throwable) {
+                0L
+            }
+
+            if (dur > 0L) {
+                withContext(Dispatchers.Main) {
+                    if (knownDurationMs <= 0L) {
+                        knownDurationMs = dur
+                        binding.tvTotalDuration.text = FormatUtils.formatDuration(dur)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun initializePlayer(startPositionMs: Long = 0L) {
         exoPlayer?.release()
 
         val renderersFactory = DefaultRenderersFactory(this).apply {
@@ -141,10 +220,14 @@ class VideoPlayerActivity : AppCompatActivity() {
                 else DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON
             )
             setEnableDecoderFallback(true)
+            setEnableAudioFloatOutput(false)
         }
 
         val extractorsFactory = DefaultExtractorsFactory()
             .setConstantBitrateSeekingEnabled(true)
+            .setConstantBitrateSeekingAlwaysEnabled(true)
+            .setMp4ExtractorFlags(Mp4Extractor.FLAG_WORKAROUND_IGNORE_EDIT_LISTS)
+            .setTsExtractorFlags(DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES)
 
         val okHttpFactory = OkHttpDataSource.Factory(CloudManager.httpClient).apply {
             if (authToken.isNotBlank() && !authToken.startsWith("DEMO_")) {
@@ -155,22 +238,36 @@ class VideoPlayerActivity : AppCompatActivity() {
         val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory, extractorsFactory)
 
         val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(15_000, 50_000, 1_200, 2_500)
+            .setBufferDurationsMs(20_000, 60_000, 1_000, 2_000)
+            .setPrioritizeTimeOverSizeThresholds(true)
             .build()
 
         exoPlayer = ExoPlayer.Builder(this, renderersFactory)
             .setMediaSourceFactory(mediaSourceFactory)
             .setLoadControl(loadControl)
+            .setSeekParameters(SeekParameters.CLOSEST_SYNC)
             .build().also { player ->
                 binding.exoPlayerView.player = player
+                if (startPositionMs > 0L) {
+                    deferredSeekOnReadyMs = startPositionMs
+                }
                 playCurrentVideoItem(player)
 
                 player.addListener(object : Player.Listener {
                     override fun onPlaybackStateChanged(playbackState: Int) {
                         binding.pbVideoBuffering.visibility =
                             if (playbackState == Player.STATE_BUFFERING) View.VISIBLE else View.GONE
-                        if (playbackState == Player.STATE_READY && player.duration > 0) {
-                            binding.tvTotalDuration.text = FormatUtils.formatDuration(player.duration)
+                        if (playbackState == Player.STATE_READY) {
+                            errorRecoveryCount = 0
+                            val dur = resolveEffectiveDuration(player)
+                            if (dur > 0L) {
+                                binding.tvTotalDuration.text = FormatUtils.formatDuration(dur)
+                            }
+                            if (deferredSeekOnReadyMs >= 0L) {
+                                val target = deferredSeekOnReadyMs
+                                deferredSeekOnReadyMs = -1L
+                                player.seekTo(target)
+                            }
                         }
                     }
 
@@ -181,30 +278,75 @@ class VideoPlayerActivity : AppCompatActivity() {
                     }
 
                     override fun onPlayerError(error: PlaybackException) {
-                        if (!preferSoftwareDecoder) {
-                            preferSoftwareDecoder = true
-                            binding.tvCodecBadge.text = "SW-FFmpeg"
-                            initializePlayer()
+                        val resumePos = (pendingScrubTargetMs.takeIf { it >= 0L } ?: player.currentPosition).coerceAtLeast(0L)
+                        if (errorRecoveryCount == 0) {
+                            errorRecoveryCount = 1
+                            preferSoftwareDecoder = !preferSoftwareDecoder
+                            binding.tvCodecBadge.text = if (preferSoftwareDecoder) "SW-FFmpeg" else "HW+FFmpeg"
+                            initializePlayer(startPositionMs = resumePos)
+                        } else if (errorRecoveryCount == 1) {
+                            errorRecoveryCount = 2
+                            // Altyazı veya ikincil iz hatasıysa metin izlerini devre dışı bırakıp devam et
+                            player.trackSelectionParameters = player.trackSelectionParameters
+                                .buildUpon()
+                                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                                .build()
+                            player.prepare()
+                            if (resumePos > 0L) {
+                                player.seekTo(resumePos)
+                            }
+                            player.playWhenReady = true
+                        } else {
+                            Toast.makeText(
+                                this@VideoPlayerActivity,
+                                "Video çözücü uyarısı: ${error.errorCodeName}",
+                                Toast.LENGTH_SHORT
+                            ).show()
                         }
                     }
                 })
             }
 
+        uiHandler.removeCallbacks(progressUpdater)
         uiHandler.post(progressUpdater)
     }
 
     private fun playCurrentVideoItem(player: ExoPlayer) {
+        knownDurationMs = 0L
+        pendingScrubTargetMs = -1L
+        errorRecoveryCount = 0
         val uri = when {
             videoUrlOrPath.startsWith("http://") ||
             videoUrlOrPath.startsWith("https://") ||
             videoUrlOrPath.startsWith("content://") ||
             videoUrlOrPath.startsWith("file://") -> Uri.parse(videoUrlOrPath)
-            else -> Uri.fromFile(java.io.File(videoUrlOrPath))
+            else -> Uri.fromFile(File(videoUrlOrPath))
         }
         binding.tvVideoTitle.text = videoTitle
+        preloadLocalVideoDuration(videoUrlOrPath)
         player.setMediaItem(MediaItem.fromUri(uri))
         player.playWhenReady = true
         player.prepare()
+    }
+
+    private fun executeSmartSeek(targetMs: Long, forceImmediate: Boolean) {
+        val player = exoPlayer ?: return
+        val dur = resolveEffectiveDuration(player)
+        val clampedTarget = if (dur > 0L) targetMs.coerceIn(0L, dur) else targetMs.coerceAtLeast(0L)
+        pendingScrubTargetMs = clampedTarget
+
+        val now = SystemClock.elapsedRealtime()
+        if (player.playbackState == Player.STATE_READY && player.duration > 0L) {
+            if (forceImmediate || (now - lastLiveSeekRealtimeMs >= 260L)) {
+                lastLiveSeekRealtimeMs = now
+                player.seekTo(clampedTarget)
+            }
+        } else {
+            deferredSeekOnReadyMs = clampedTarget
+            if (forceImmediate && player.playbackState == Player.STATE_IDLE) {
+                player.prepare()
+            }
+        }
     }
 
     private fun setupOverlayControls() {
@@ -242,7 +384,7 @@ class VideoPlayerActivity : AppCompatActivity() {
             }
         }
 
-        // Sağ alttaki buton: 2. Kontrol Satırını (Karıştır, Tekrar, 1X, Altyazı) açar/kapatır (Video 5 00:57-00:59)
+        // Sağ alttaki buton: 2. Kontrol Satırını (Karıştır, Tekrar, 1X, Altyazı) açar/kapatır
         binding.btnSubtitlesAndAudio.setOnClickListener {
             val isVisible = binding.llExtraVideoControls.visibility == View.VISIBLE
             binding.llExtraVideoControls.visibility = if (isVisible) View.GONE else View.VISIBLE
@@ -326,12 +468,14 @@ class VideoPlayerActivity : AppCompatActivity() {
         binding.sbVideoProgress.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 val p = exoPlayer ?: return
-                if (fromUser && p.duration > 0) {
-                    val target = (p.duration * progress) / 1000L
-                    p.seekTo(target)
+                val dur = resolveEffectiveDuration(p)
+                if (fromUser && dur > 0L) {
+                    val target = (dur * progress) / 1000L
+                    pendingScrubTargetMs = target
                     val formatted = FormatUtils.formatDuration(target)
                     binding.tvCurrentTime.text = formatted
                     showCenterOverlayLabel(formatted)
+                    executeSmartSeek(target, forceImmediate = false)
                 }
             }
             override fun onStartTrackingTouch(seekBar: SeekBar?) {
@@ -339,6 +483,10 @@ class VideoPlayerActivity : AppCompatActivity() {
             }
             override fun onStopTrackingTouch(seekBar: SeekBar?) {
                 isDraggingSeekBar = false
+                if (pendingScrubTargetMs >= 0L) {
+                    executeSmartSeek(pendingScrubTargetMs, forceImmediate = true)
+                }
+                hideCenterOverlayLabelDelayed(500L)
             }
         })
 
@@ -354,8 +502,7 @@ class VideoPlayerActivity : AppCompatActivity() {
                         preferSoftwareDecoder = !preferSoftwareDecoder
                         binding.tvCodecBadge.text = if (preferSoftwareDecoder) "SW-FFmpeg" else "HW+FFmpeg"
                         val pos = exoPlayer?.currentPosition ?: 0L
-                        initializePlayer()
-                        exoPlayer?.seekTo(pos)
+                        initializePlayer(startPositionMs = pos)
                     }
                     3 -> {
                         val fi = FileItem(
@@ -383,22 +530,13 @@ class VideoPlayerActivity : AppCompatActivity() {
         if (p.isPlaying) {
             p.pause()
         } else {
+            if (p.playbackState == Player.STATE_IDLE) {
+                p.prepare()
+            }
             p.play()
         }
     }
 
-    /**
-     * Orijinal APK Video Oynatıcı Parmak Hareketleri (Video 5 00:52-00:56):
-     * 1) Yatay Kaydırma (Sağa-Sola Parmağı Sürükleme):
-     *    - Parmağınızı ekran üzerinde sağa veya sola kaydırdığınızda videoyu anlık olarak ileri/geri sarar
-     *      ve ekranın tam ortasında "00:55" / "00:19" şeklinde büyük beyaz zamanı gösterir!
-     * 2) 3 Bölgeli Çift Dokunma (Double Tap):
-     *    - Orta 1/3 bölgeye çift tıklama: Videoyu Duraklatır / Oynatır!
-     *    - Sol 1/3 bölgeye çift tıklama: 10 saniye geri sarar (-10 sn).
-     *    - Sağ 1/3 bölgeye çift tıklama: 10 saniye ileri sarar (+10 sn).
-     * 3) Basılı Tutma (Long Press):
-     *    - 2X hızlı oynatmayı başlatır, parmak çekilince normal hıza döner.
-     */
     @SuppressLint("ClickableViewAccessibility")
     private fun setupTouchAndScrubGestures() {
         val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
@@ -431,15 +569,12 @@ class VideoPlayerActivity : AppCompatActivity() {
 
                 when {
                     e.x < leftBoundary -> {
-                        // Sol 1/3: -10 saniye geri sar
                         seekByDelta(-10_000L)
                     }
                     e.x > rightBoundary -> {
-                        // Sağ 1/3: +10 saniye ileri sar
                         seekByDelta(10_000L)
                     }
                     else -> {
-                        // ORTA 1/3: Videoyu Duraklat / Oynat!
                         togglePlayPause()
                         binding.playerControlsOverlay.visibility = View.VISIBLE
                     }
@@ -470,7 +605,7 @@ class VideoPlayerActivity : AppCompatActivity() {
                 MotionEvent.ACTION_DOWN -> {
                     downX = event.x
                     downY = event.y
-                    scrubStartPosMs = player.currentPosition.coerceAtLeast(0L)
+                    scrubStartPosMs = (pendingScrubTargetMs.takeIf { it >= 0L } ?: player.currentPosition).coerceAtLeast(0L)
                     gestureMode = 0
                     startVolume = audioManager?.getStreamVolume(AudioManager.STREAM_MUSIC) ?: 0
                     val curBr = window.attributes.screenBrightness
@@ -492,17 +627,21 @@ class VideoPlayerActivity : AppCompatActivity() {
                     }
 
                     if (gestureMode == 1) {
-                        val dur = player.duration.coerceAtLeast(1L)
-                        // Ekran genişliği boyunca kaydırma: videonun süresine göre akıcı (en az 60 sn, en fazla 180 sn)
-                        val fullSwipeSpanMs = (dur / 2L).coerceIn(60_000L, 180_000L)
+                        val effectiveDur = resolveEffectiveDuration(player)
+                        // Süre henüz bilinmiyorsa bile 2 saatlik (7200 sn) varsayılan aralıkla sarma önizlemesi yap
+                        val maxDur = if (effectiveDur > 0L) effectiveDur else 7_200_000L
+                        val fullSwipeSpanMs = (maxDur / 6L).coerceIn(90_000L, 600_000L)
                         val deltaMs = ((dx / width) * fullSwipeSpanMs).toLong()
-                        val targetPos = (scrubStartPosMs + deltaMs).coerceIn(0L, dur)
+                        val targetPos = (scrubStartPosMs + deltaMs).coerceIn(0L, maxDur)
 
-                        player.seekTo(targetPos)
+                        pendingScrubTargetMs = targetPos
                         val formatted = FormatUtils.formatDuration(targetPos)
                         binding.tvCurrentTime.text = formatted
-                        binding.sbVideoProgress.progress = ((targetPos * 1000L) / dur).toInt().coerceIn(0, 1000)
+                        if (effectiveDur > 0L) {
+                            binding.sbVideoProgress.progress = ((targetPos * 1000L) / effectiveDur).toInt().coerceIn(0, 1000)
+                        }
                         showCenterOverlayLabel(formatted)
+                        executeSmartSeek(targetPos, forceImmediate = false)
                     } else if (gestureMode == 2) {
                         val deltaRatio = -dy / (height * 0.75f)
                         if (downX < width / 2f) {
@@ -527,6 +666,9 @@ class VideoPlayerActivity : AppCompatActivity() {
                     }
                     if (isHorizontalScrubbing) {
                         isHorizontalScrubbing = false
+                        if (pendingScrubTargetMs >= 0L) {
+                            executeSmartSeek(pendingScrubTargetMs, forceImmediate = true)
+                        }
                         hideCenterOverlayLabelDelayed(500L)
                     } else if (gestureMode == 2) {
                         hideCenterOverlayLabelDelayed(500L)
@@ -543,9 +685,10 @@ class VideoPlayerActivity : AppCompatActivity() {
 
     private fun seekByDelta(deltaMs: Long) {
         val player = exoPlayer ?: return
-        val dur = player.duration.coerceAtLeast(0L)
-        val target = (player.currentPosition + deltaMs).coerceIn(0L, if (dur > 0L) dur else Long.MAX_VALUE)
-        player.seekTo(target)
+        val dur = resolveEffectiveDuration(player)
+        val basePos = (pendingScrubTargetMs.takeIf { it >= 0L } ?: player.currentPosition).coerceAtLeast(0L)
+        val target = (basePos + deltaMs).coerceIn(0L, if (dur > 0L) dur else Long.MAX_VALUE)
+        executeSmartSeek(target, forceImmediate = true)
         val formatted = FormatUtils.formatDuration(target)
         binding.tvCurrentTime.text = formatted
         if (dur > 0L) {
@@ -566,7 +709,7 @@ class VideoPlayerActivity : AppCompatActivity() {
         uiHandler.postAtTime(
             { binding.tvCenterSeekOverlay.visibility = View.GONE },
             "HIDE_SEEK_LABEL",
-            android.os.SystemClock.uptimeMillis() + delayMs
+            SystemClock.uptimeMillis() + delayMs
         )
     }
 

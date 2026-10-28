@@ -111,6 +111,7 @@ data class FileItem(
 
 enum class CloudProviderType(val displayName: String, val prefName: String) {
     GOOGLE_DRIVE("Google Drive", "GoogleDrivePrefs"),
+    MEGA("MEGA", "MegaCloudPrefs"),
     DROPBOX("Dropbox", "DropboxPrefs"),
     ONEDRIVE("OneDrive", "OneDrivePrefs"),
     BOX("Box", "BoxCloudPrefs"),

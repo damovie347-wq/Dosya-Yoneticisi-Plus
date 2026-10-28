@@ -682,6 +682,7 @@ class CloudAccountsAdapter(
 
             val iconRes = when (acc.provider) {
                 CloudProviderType.GOOGLE_DRIVE -> R.drawable.cloud_icon_googledrive
+                CloudProviderType.MEGA -> R.drawable.ic_cloud_mega
                 CloudProviderType.DROPBOX -> R.drawable.cloud_icon_dropbox
                 CloudProviderType.ONEDRIVE -> R.drawable.cloud_icon_onedrive
                 CloudProviderType.BOX -> R.drawable.cloud_icon_box

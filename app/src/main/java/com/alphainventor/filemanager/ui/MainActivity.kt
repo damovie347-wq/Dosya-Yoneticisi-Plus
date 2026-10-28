@@ -581,6 +581,7 @@ class MainActivity : AppCompatActivity() {
                 for (acc in clouds) {
                     val icon = when (acc.provider) {
                         com.alphainventor.filemanager.model.CloudProviderType.GOOGLE_DRIVE -> R.drawable.cloud_icon_googledrive
+                        com.alphainventor.filemanager.model.CloudProviderType.MEGA -> R.drawable.ic_cloud_mega
                         com.alphainventor.filemanager.model.CloudProviderType.DROPBOX -> R.drawable.cloud_icon_dropbox
                         com.alphainventor.filemanager.model.CloudProviderType.ONEDRIVE -> R.drawable.cloud_icon_onedrive
                         com.alphainventor.filemanager.model.CloudProviderType.BOX -> R.drawable.cloud_icon_box
