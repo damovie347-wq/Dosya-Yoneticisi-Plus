@@ -3,6 +3,8 @@ package com.alphainventor.filemanager.viewer
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.ActivityInfo
+import android.graphics.Color
+import android.graphics.Typeface
 import android.media.AudioManager
 import android.media.MediaMetadataRetriever
 import android.net.Uri
@@ -12,11 +14,18 @@ import android.os.Looper
 import android.os.SystemClock
 import android.provider.OpenableColumns
 import android.view.GestureDetector
+import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.ViewGroup
+import android.widget.LinearLayout
 import android.widget.PopupMenu
+import android.widget.RadioButton
+import android.widget.RadioGroup
+import android.widget.ScrollView
 import android.widget.SeekBar
+import android.widget.TextView
 import android.widget.Toast
 import androidx.annotation.OptIn
 import androidx.appcompat.app.AlertDialog
@@ -29,43 +38,45 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.SeekParameters
+import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
+import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.extractor.DefaultExtractorsFactory
-import androidx.media3.extractor.mp4.Mp4Extractor
-import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory
 import com.alphainventor.filemanager.R
 import com.alphainventor.filemanager.cloud.CloudManager
 import com.alphainventor.filemanager.core.LocalFileRepository
 import com.alphainventor.filemanager.databinding.ActivityVideoPlayerBinding
 import com.alphainventor.filemanager.model.FileItem
 import com.alphainventor.filemanager.model.FileSourceType
+import com.alphainventor.filemanager.theme.ThemeManager
 import com.alphainventor.filemanager.util.FormatUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.Locale
 import kotlin.math.abs
 
 /**
- * Orijinal Dosya Yöneticisi + 3.6.7 Video Oynatıcı (com.alphainventor.filemanager.viewer.VideoPlayerActivity):
- * 1) Uzun .mkv (AV1, HEVC, DDP5.1 / E-AC3, AC3, DTS) ve .mp4 videolarında anlık anahtar kare (CLOSEST_SYNC) sarma:
- *    - MediaMetadataRetriever ile yerel video süresi (duration) dosya açılır açılmaz (<10ms) okunur, "00:00" takılması önlenir.
- *    - Yatay parmak sürükleme (Horizontal Scrubbing) ve SeekBar kaydırma sırasında ExoPlayer'a saniyede 120 kez seekTo()
- *      gönderip MatroskaExtractor/AV1 çözücüsünü kilitlemek yerine, süre etiketi 120Hz akıcı güncellenir ve seekTo()
- *      kontrollü (CLOSEST_SYNC + parmak bırakıldığında / 260ms aralıkla) uygulanır.
- *    - Varsayılan olarak EXTENSION_RENDERER_MODE_PREFER + setEnableDecoderFallback(true) kullanılarak DDP5.1 (E-AC3 5.1)
- *      ses izleri doğrudan FFmpeg çözücüsüyle hatasız çözülür.
- * 2) 3 Bölgeli Çift Tıklama (3-Zone Double Tap):
- *    - Ekranın ORTA 1/3 kısmına çift tıklayınca: Videoyu Duraklatır / Oynatır.
- *    - Ekranın SOL 1/3 kısmına çift tıklayınca: 10 saniye geri sarar (-10 sn).
- *    - Ekranın SAĞ 1/3 kısmına çift tıklayınca: 10 saniye ileri sarar (+10 sn).
+ * Orijinal Dosya Yöneticisi + 3.6.7 MPV Sınıfı Yüksek Performanslı Video Oynatıcı:
+ * 1) MPV tarzı anlık önbellekleme (bufferForPlaybackMs = 250ms, 10 sn geri tamponu) ve Matroska (.mkv)
+ *    Cues anahtar kare tablosunu bozmayan temiz DefaultExtractorsFactory yapılandırması.
+ * 2) AV1 (10-bit / AV1Core) ve DDP5.1 (E-AC3) .mkv dosyalarında:
+ *    - Önce donanım çözücüsü (EXTENSION_RENDERER_MODE_ON + tüm sistem MediaCodec listesi yedeklemesi) kullanılır.
+ *    - onPlayerError içinde playCurrentVideoItem'ın errorRecoveryCount değerini sıfırlaması nedeniyle oluşan
+ *      sonsuz 00:00 döngüsü tamamen giderildi; hata durumunda konum (resumePos) korunarak kurtarma yapılır
+ *      ve gerekirse yerleşik donanım VideoView yüzeyine kesintisiz geçilir!
+ * 3) Etkileşimli Ses İzi (🎵) ve Altyazı (💬) Seçici:
+ *    - Film içindeki tüm gömülü ses izlerini (dil, kanal, kodek) ve altyazıları listeler, tek dokunuşla
+ *      TrackSelectionOverride üzerinden anında değiştirir!
  */
 @OptIn(UnstableApi::class)
 class VideoPlayerActivity : AppCompatActivity() {
@@ -85,7 +96,8 @@ class VideoPlayerActivity : AppCompatActivity() {
     private var isRepeatOne: Boolean = false
     private var isShuffleEnabled: Boolean = false
     private var currentSpeed: Float = 1.0f
-    private var preferSoftwareDecoder: Boolean = true
+    private var preferSoftwareDecoder: Boolean = false
+    private var usingPlatformFallback: Boolean = false
     private var isDraggingSeekBar: Boolean = false
     private var isHorizontalScrubbing: Boolean = false
 
@@ -97,14 +109,27 @@ class VideoPlayerActivity : AppCompatActivity() {
 
     private val progressUpdater = object : Runnable {
         override fun run() {
-            val player = exoPlayer
-            if (player != null && !isDraggingSeekBar && !isHorizontalScrubbing) {
-                val pos = player.currentPosition.coerceAtLeast(0L)
-                val dur = resolveEffectiveDuration(player)
-                binding.tvCurrentTime.text = FormatUtils.formatDuration(pos)
-                if (dur > 0L) {
-                    binding.tvTotalDuration.text = FormatUtils.formatDuration(dur)
-                    binding.sbVideoProgress.progress = ((pos * 1000L) / dur).toInt().coerceIn(0, 1000)
+            if (!isDraggingSeekBar && !isHorizontalScrubbing) {
+                if (usingPlatformFallback) {
+                    val vv = binding.platformVideoView
+                    val pos = vv.currentPosition.toLong().coerceAtLeast(0L)
+                    val dur = vv.duration.toLong().takeIf { it > 0L } ?: knownDurationMs
+                    binding.tvCurrentTime.text = FormatUtils.formatDuration(pos)
+                    if (dur > 0L) {
+                        binding.tvTotalDuration.text = FormatUtils.formatDuration(dur)
+                        binding.sbVideoProgress.progress = ((pos * 1000L) / dur).toInt().coerceIn(0, 1000)
+                    }
+                } else {
+                    val player = exoPlayer
+                    if (player != null) {
+                        val pos = player.currentPosition.coerceAtLeast(0L)
+                        val dur = resolveEffectiveDuration(player)
+                        binding.tvCurrentTime.text = FormatUtils.formatDuration(pos)
+                        if (dur > 0L) {
+                            binding.tvTotalDuration.text = FormatUtils.formatDuration(dur)
+                            binding.sbVideoProgress.progress = ((pos * 1000L) / dur).toInt().coerceIn(0, 1000)
+                        }
+                    }
                 }
             }
             uiHandler.postDelayed(this, 250L)
@@ -134,10 +159,18 @@ class VideoPlayerActivity : AppCompatActivity() {
 
         setupOverlayControls()
         setupTouchAndScrubGestures()
-        initializePlayer()
+        initializePlayer(startPositionMs = 0L, isErrorRecovery = false)
     }
 
     private fun resolveEffectiveDuration(player: ExoPlayer?): Long {
+        if (usingPlatformFallback) {
+            val vDur = binding.platformVideoView.duration.toLong()
+            if (vDur > 0L) {
+                knownDurationMs = vDur
+                return vDur
+            }
+            return knownDurationMs.coerceAtLeast(0L)
+        }
         val pDur = player?.duration ?: C.TIME_UNSET
         if (pDur > 0L && pDur != C.TIME_UNSET) {
             knownDurationMs = pDur
@@ -168,9 +201,7 @@ class VideoPlayerActivity : AppCompatActivity() {
                 val retriever = MediaMetadataRetriever()
                 try {
                     when {
-                        pathOrUri.startsWith("http://") || pathOrUri.startsWith("https://") -> {
-                            0L
-                        }
+                        pathOrUri.startsWith("http://") || pathOrUri.startsWith("https://") -> 0L
                         pathOrUri.startsWith("content://") -> {
                             retriever.setDataSource(this@VideoPlayerActivity, Uri.parse(pathOrUri))
                             retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
@@ -211,23 +242,46 @@ class VideoPlayerActivity : AppCompatActivity() {
         }
     }
 
-    private fun initializePlayer(startPositionMs: Long = 0L) {
+    private fun resolveMediaUri(): Uri {
+        return when {
+            videoUrlOrPath.startsWith("http://") ||
+            videoUrlOrPath.startsWith("https://") ||
+            videoUrlOrPath.startsWith("content://") ||
+            videoUrlOrPath.startsWith("file://") -> Uri.parse(videoUrlOrPath)
+            else -> Uri.fromFile(File(videoUrlOrPath))
+        }
+    }
+
+    private fun initializePlayer(startPositionMs: Long = 0L, isErrorRecovery: Boolean = false) {
+        usingPlatformFallback = false
+        binding.platformVideoView.stopPlayback()
+        binding.platformVideoView.visibility = View.GONE
+        binding.exoPlayerView.visibility = View.VISIBLE
+
         exoPlayer?.release()
 
+        // Tüm donanım + yazılım (dav1d / c2.android.av1) çözücülerini sırayla deneyen esnek MediaCodecSelector
+        val permissiveSelector = MediaCodecSelector { mimeType, requiresSecure, requiresTunneling ->
+            val defaultList = MediaCodecUtil.getDecoderInfos(mimeType, requiresSecure, requiresTunneling)
+            if (defaultList.isNotEmpty() || requiresSecure) {
+                defaultList
+            } else {
+                MediaCodecUtil.getDecoderInfos(mimeType, false, false)
+            }
+        }
+
         val renderersFactory = DefaultRenderersFactory(this).apply {
+            setMediaCodecSelector(permissiveSelector)
             setExtensionRendererMode(
                 if (preferSoftwareDecoder) DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER
                 else DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON
             )
             setEnableDecoderFallback(true)
-            setEnableAudioFloatOutput(false)
         }
 
+        // Matroska (.mkv) Cues indeksini bozmayan temiz DefaultExtractorsFactory
         val extractorsFactory = DefaultExtractorsFactory()
             .setConstantBitrateSeekingEnabled(true)
-            .setConstantBitrateSeekingAlwaysEnabled(true)
-            .setMp4ExtractorFlags(Mp4Extractor.FLAG_WORKAROUND_IGNORE_EDIT_LISTS)
-            .setTsExtractorFlags(DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES)
 
         val okHttpFactory = OkHttpDataSource.Factory(CloudManager.httpClient).apply {
             if (authToken.isNotBlank() && !authToken.startsWith("DEMO_")) {
@@ -237,33 +291,38 @@ class VideoPlayerActivity : AppCompatActivity() {
         val dataSourceFactory = DefaultDataSource.Factory(this, okHttpFactory)
         val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory, extractorsFactory)
 
+        // MPV sınıfı hızlı başlangıç ve sarma tamponu (250ms ilk kare, 10sn geri tampon)
         val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(20_000, 60_000, 1_000, 2_000)
-            .setPrioritizeTimeOverSizeThresholds(true)
+            .setBufferDurationsMs(
+                15_000,
+                50_000,
+                250,
+                800
+            )
+            .setBackBuffer(10_000, true)
+            .setPrioritizeTimeOverSizeThresholds(false)
             .build()
 
         exoPlayer = ExoPlayer.Builder(this, renderersFactory)
             .setMediaSourceFactory(mediaSourceFactory)
             .setLoadControl(loadControl)
-            .setSeekParameters(SeekParameters.CLOSEST_SYNC)
             .build().also { player ->
                 binding.exoPlayerView.player = player
                 if (startPositionMs > 0L) {
                     deferredSeekOnReadyMs = startPositionMs
                 }
-                playCurrentVideoItem(player)
+                loadMediaIntoExoPlayer(player, resetRecoveryState = !isErrorRecovery, initialPosMs = startPositionMs)
 
                 player.addListener(object : Player.Listener {
                     override fun onPlaybackStateChanged(playbackState: Int) {
                         binding.pbVideoBuffering.visibility =
                             if (playbackState == Player.STATE_BUFFERING) View.VISIBLE else View.GONE
                         if (playbackState == Player.STATE_READY) {
-                            errorRecoveryCount = 0
                             val dur = resolveEffectiveDuration(player)
                             if (dur > 0L) {
                                 binding.tvTotalDuration.text = FormatUtils.formatDuration(dur)
                             }
-                            if (deferredSeekOnReadyMs >= 0L) {
+                            if (deferredSeekOnReadyMs > 0L) {
                                 val target = deferredSeekOnReadyMs
                                 deferredSeekOnReadyMs = -1L
                                 player.seekTo(target)
@@ -278,30 +337,44 @@ class VideoPlayerActivity : AppCompatActivity() {
                     }
 
                     override fun onPlayerError(error: PlaybackException) {
-                        val resumePos = (pendingScrubTargetMs.takeIf { it >= 0L } ?: player.currentPosition).coerceAtLeast(0L)
-                        if (errorRecoveryCount == 0) {
-                            errorRecoveryCount = 1
-                            preferSoftwareDecoder = !preferSoftwareDecoder
-                            binding.tvCodecBadge.text = if (preferSoftwareDecoder) "SW-FFmpeg" else "HW+FFmpeg"
-                            initializePlayer(startPositionMs = resumePos)
-                        } else if (errorRecoveryCount == 1) {
-                            errorRecoveryCount = 2
-                            // Altyazı veya ikincil iz hatasıysa metin izlerini devre dışı bırakıp devam et
-                            player.trackSelectionParameters = player.trackSelectionParameters
-                                .buildUpon()
-                                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
-                                .build()
-                            player.prepare()
-                            if (resumePos > 0L) {
-                                player.seekTo(resumePos)
+                        val resumePos = (
+                            pendingScrubTargetMs.takeIf { it >= 0L }
+                                ?: deferredSeekOnReadyMs.takeIf { it >= 0L }
+                                ?: player.currentPosition
+                            ).coerceAtLeast(0L)
+
+                        when (errorRecoveryCount) {
+                            0 -> {
+                                errorRecoveryCount = 1
+                                preferSoftwareDecoder = !preferSoftwareDecoder
+                                binding.tvCodecBadge.text = if (preferSoftwareDecoder) "SW-FFmpeg" else "HW+FFmpeg"
+                                initializePlayer(startPositionMs = resumePos, isErrorRecovery = true)
                             }
-                            player.playWhenReady = true
-                        } else {
-                            Toast.makeText(
-                                this@VideoPlayerActivity,
-                                "Video çözücü uyarısı: ${error.errorCodeName}",
-                                Toast.LENGTH_SHORT
-                            ).show()
+                            1 -> {
+                                errorRecoveryCount = 2
+                                // İkincil metin/altyazı izi hatasıysa devre dışı bırakıp aynı konumdan devam et
+                                player.trackSelectionParameters = player.trackSelectionParameters
+                                    .buildUpon()
+                                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                                    .build()
+                                player.prepare()
+                                if (resumePos > 0L) {
+                                    player.seekTo(resumePos)
+                                }
+                                player.playWhenReady = true
+                            }
+                            else -> {
+                                // Yerel dosyada özel AV1/DDP5.1 donanım uyuşmazlığı varsa doğrudan yerleşik Platform VideoView'a geç
+                                if (!videoUrlOrPath.startsWith("http")) {
+                                    switchToPlatformVideoViewFallback(resumePos)
+                                } else {
+                                    Toast.makeText(
+                                        this@VideoPlayerActivity,
+                                        "Video akış hatası: ${error.errorCodeName}",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            }
                         }
                     }
                 })
@@ -311,33 +384,71 @@ class VideoPlayerActivity : AppCompatActivity() {
         uiHandler.post(progressUpdater)
     }
 
-    private fun playCurrentVideoItem(player: ExoPlayer) {
-        knownDurationMs = 0L
-        pendingScrubTargetMs = -1L
-        errorRecoveryCount = 0
-        val uri = when {
-            videoUrlOrPath.startsWith("http://") ||
-            videoUrlOrPath.startsWith("https://") ||
-            videoUrlOrPath.startsWith("content://") ||
-            videoUrlOrPath.startsWith("file://") -> Uri.parse(videoUrlOrPath)
-            else -> Uri.fromFile(File(videoUrlOrPath))
+    private fun switchToPlatformVideoViewFallback(startPosMs: Long) {
+        try {
+            exoPlayer?.release()
+            exoPlayer = null
+            usingPlatformFallback = true
+            binding.tvCodecBadge.text = "HW-Sistem"
+            binding.pbVideoBuffering.visibility = View.GONE
+            binding.exoPlayerView.visibility = View.GONE
+            binding.platformVideoView.visibility = View.VISIBLE
+
+            val uri = resolveMediaUri()
+            binding.platformVideoView.setVideoURI(uri)
+            binding.platformVideoView.setOnPreparedListener { mp ->
+                val dur = mp.duration.toLong()
+                if (dur > 0L) {
+                    knownDurationMs = dur
+                    binding.tvTotalDuration.text = FormatUtils.formatDuration(dur)
+                }
+                if (startPosMs > 0L) {
+                    binding.platformVideoView.seekTo(startPosMs.toInt())
+                }
+                binding.platformVideoView.start()
+                binding.btnPlayPause.setImageResource(R.drawable.ic_vp_pause)
+            }
+            binding.platformVideoView.setOnErrorListener { _, _, _ ->
+                false
+            }
+        } catch (_: Throwable) {
         }
+    }
+
+    private fun loadMediaIntoExoPlayer(player: ExoPlayer, resetRecoveryState: Boolean, initialPosMs: Long = 0L) {
+        if (resetRecoveryState) {
+            knownDurationMs = 0L
+            pendingScrubTargetMs = -1L
+            errorRecoveryCount = 0
+        }
+        val uri = resolveMediaUri()
         binding.tvVideoTitle.text = videoTitle
         preloadLocalVideoDuration(videoUrlOrPath)
-        player.setMediaItem(MediaItem.fromUri(uri))
+        if (initialPosMs > 0L) {
+            player.setMediaItem(MediaItem.fromUri(uri), initialPosMs)
+        } else {
+            player.setMediaItem(MediaItem.fromUri(uri))
+        }
         player.playWhenReady = true
         player.prepare()
     }
 
     private fun executeSmartSeek(targetMs: Long, forceImmediate: Boolean) {
-        val player = exoPlayer ?: return
-        val dur = resolveEffectiveDuration(player)
+        val dur = resolveEffectiveDuration(exoPlayer)
         val clampedTarget = if (dur > 0L) targetMs.coerceIn(0L, dur) else targetMs.coerceAtLeast(0L)
         pendingScrubTargetMs = clampedTarget
 
+        if (usingPlatformFallback) {
+            if (forceImmediate) {
+                binding.platformVideoView.seekTo(clampedTarget.toInt())
+            }
+            return
+        }
+
+        val player = exoPlayer ?: return
         val now = SystemClock.elapsedRealtime()
         if (player.playbackState == Player.STATE_READY && player.duration > 0L) {
-            if (forceImmediate || (now - lastLiveSeekRealtimeMs >= 260L)) {
+            if (forceImmediate || (now - lastLiveSeekRealtimeMs >= 320L)) {
                 lastLiveSeekRealtimeMs = now
                 player.seekTo(clampedTarget)
             }
@@ -356,35 +467,45 @@ class VideoPlayerActivity : AppCompatActivity() {
             togglePlayPause()
         }
 
+        binding.tvCodecBadge.setOnClickListener {
+            toggleHardwareSoftwareDecoder()
+        }
+
+        binding.btnQuickAudioTrack.setOnClickListener {
+            showInteractiveTrackSelectorDialog(initialFocusAudio = true)
+        }
+
+        binding.btnQuickSubtitleTrack.setOnClickListener {
+            showInteractiveTrackSelectorDialog(initialFocusAudio = false)
+        }
+
         // |◀ Önceki Video veya 10 sn Geri
         binding.btnRewind10.setOnClickListener {
-            val p = exoPlayer ?: return@setOnClickListener
+            val curPos = if (usingPlatformFallback) binding.platformVideoView.currentPosition.toLong() else (exoPlayer?.currentPosition ?: 0L)
             if (binding.llExtraVideoControls.visibility == View.VISIBLE) {
                 seekByDelta(-10_000L)
-            } else if (p.currentPosition > 4_000L || playlistUrls.size <= 1) {
+            } else if (curPos > 4_000L || playlistUrls.size <= 1) {
                 seekByDelta(-10_000L)
             } else {
                 playlistIndex = if (playlistIndex > 0) playlistIndex - 1 else playlistUrls.lastIndex
                 videoUrlOrPath = playlistUrls[playlistIndex]
                 videoTitle = playlistTitles.getOrElse(playlistIndex) { videoUrlOrPath.substringAfterLast('/') }
-                playCurrentVideoItem(p)
+                initializePlayer(startPositionMs = 0L, isErrorRecovery = false)
             }
         }
 
         // ▶| Sonraki Video veya 10 sn İleri
         binding.btnForward10.setOnClickListener {
-            val p = exoPlayer ?: return@setOnClickListener
             if (binding.llExtraVideoControls.visibility == View.VISIBLE || playlistUrls.size <= 1) {
                 seekByDelta(10_000L)
             } else {
                 playlistIndex = (playlistIndex + 1) % playlistUrls.size
                 videoUrlOrPath = playlistUrls[playlistIndex]
                 videoTitle = playlistTitles.getOrElse(playlistIndex) { videoUrlOrPath.substringAfterLast('/') }
-                playCurrentVideoItem(p)
+                initializePlayer(startPositionMs = 0L, isErrorRecovery = false)
             }
         }
 
-        // Sağ alttaki buton: 2. Kontrol Satırını (Karıştır, Tekrar, 1X, Altyazı) açar/kapatır
         binding.btnSubtitlesAndAudio.setOnClickListener {
             val isVisible = binding.llExtraVideoControls.visibility == View.VISIBLE
             binding.llExtraVideoControls.visibility = if (isVisible) View.GONE else View.VISIBLE
@@ -424,7 +545,7 @@ class VideoPlayerActivity : AppCompatActivity() {
         }
 
         binding.btnTrackSelector.setOnClickListener {
-            showTrackInfoDialog()
+            showInteractiveTrackSelectorDialog(initialFocusAudio = false)
         }
 
         binding.btnAspectRatio.setOnClickListener {
@@ -467,8 +588,7 @@ class VideoPlayerActivity : AppCompatActivity() {
 
         binding.sbVideoProgress.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                val p = exoPlayer ?: return
-                val dur = resolveEffectiveDuration(p)
+                val dur = resolveEffectiveDuration(exoPlayer)
                 if (fromUser && dur > 0L) {
                     val target = (dur * progress) / 1000L
                     pendingScrubTargetMs = target
@@ -492,18 +612,13 @@ class VideoPlayerActivity : AppCompatActivity() {
 
         binding.btnVideoMore.setOnClickListener { v ->
             val popup = PopupMenu(this, v)
-            popup.menu.add(0, 1, 0, "Altyazı ve Ses İzi Bilgisi")
+            popup.menu.add(0, 1, 0, "Ses İzi ve Altyazı Seçimi")
             popup.menu.add(0, 2, 1, "Çözücü Değiştir (Donanım HW / Yazılım FFmpeg)")
             popup.menu.add(0, 3, 2, "Şununla aç (Harici Video Oynatıcı)")
             popup.setOnMenuItemClickListener { item ->
                 when (item.itemId) {
-                    1 -> showTrackInfoDialog()
-                    2 -> {
-                        preferSoftwareDecoder = !preferSoftwareDecoder
-                        binding.tvCodecBadge.text = if (preferSoftwareDecoder) "SW-FFmpeg" else "HW+FFmpeg"
-                        val pos = exoPlayer?.currentPosition ?: 0L
-                        initializePlayer(startPositionMs = pos)
-                    }
+                    1 -> showInteractiveTrackSelectorDialog(initialFocusAudio = false)
+                    2 -> toggleHardwareSoftwareDecoder()
                     3 -> {
                         val fi = FileItem(
                             id = videoUrlOrPath,
@@ -525,7 +640,29 @@ class VideoPlayerActivity : AppCompatActivity() {
         }
     }
 
+    private fun toggleHardwareSoftwareDecoder() {
+        val pos = if (usingPlatformFallback) {
+            binding.platformVideoView.currentPosition.toLong()
+        } else {
+            exoPlayer?.currentPosition ?: 0L
+        }
+        preferSoftwareDecoder = !preferSoftwareDecoder
+        binding.tvCodecBadge.text = if (preferSoftwareDecoder) "SW-FFmpeg" else "HW+FFmpeg"
+        initializePlayer(startPositionMs = pos.coerceAtLeast(0L), isErrorRecovery = false)
+    }
+
     private fun togglePlayPause() {
+        if (usingPlatformFallback) {
+            val vv = binding.platformVideoView
+            if (vv.isPlaying) {
+                vv.pause()
+                binding.btnPlayPause.setImageResource(R.drawable.ic_vp_play)
+            } else {
+                vv.start()
+                binding.btnPlayPause.setImageResource(R.drawable.ic_vp_pause)
+            }
+            return
+        }
         val p = exoPlayer ?: return
         if (p.isPlaying) {
             p.pause()
@@ -535,6 +672,239 @@ class VideoPlayerActivity : AppCompatActivity() {
             }
             p.play()
         }
+    }
+
+    /**
+     * Video 01:08 - 01:14'te Kullanıcının İstediği Etkileşimli Ses İzi ve Altyazı Seçim Diyaloğu:
+     * - Film içindeki tüm gömülü Ses İzlerini (C.TRACK_TYPE_AUDIO: Dil, Etiket, Kanal, Kodek) radyo butonlarıyla listeler ve seçtirir.
+     * - Film içindeki tüm gömülü Altyazıları (C.TRACK_TYPE_TEXT: "Altyazı Kapalı" + Tüm diller/formatlar) radyo butonlarıyla listeler ve seçtirir.
+     */
+    private fun showInteractiveTrackSelectorDialog(initialFocusAudio: Boolean) {
+        val p = exoPlayer
+        if (p == null) {
+            Toast.makeText(this, "Sistem donanım oynatıcısında varsayılan ses izi aktif.", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val density = resources.displayMetrics.density
+        val cardColor = ThemeManager.getCardColor(this)
+        val primaryColor = ThemeManager.getPrimaryTextColor(this)
+        val secondaryColor = ThemeManager.getSecondaryTextColor(this)
+        val tealColor = Color.parseColor("#008578")
+
+        val scroll = ScrollView(this).apply {
+            setBackgroundColor(cardColor)
+        }
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val padH = (20 * density).toInt()
+            val padV = (16 * density).toInt()
+            setPadding(padH, padV, padH, padV)
+            setBackgroundColor(cardColor)
+        }
+        scroll.addView(root)
+
+        val tracks: Tracks = p.currentTracks
+        val audioGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+        val textGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
+
+        // 1. BÖLÜM: SES İZİ SEÇİMİ
+        val tvAudioHeader = TextView(this).apply {
+            text = "🎵 Ses İzi Seçimi (${audioGroups.sumOf { it.length }})"
+            textSize = 15.5f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(tealColor)
+            setPadding(0, 0, 0, (8 * density).toInt())
+        }
+        root.addView(tvAudioHeader)
+
+        val rgAudio = RadioGroup(this).apply {
+            orientation = RadioGroup.VERTICAL
+        }
+
+        data class TrackOption(
+            val radioId: Int,
+            val groupIndex: Int,
+            val trackIndex: Int,
+            val group: Tracks.Group?,
+            val label: String,
+            val isSelected: Boolean
+        )
+
+        val audioOptions = ArrayList<TrackOption>()
+        var nextRadioId = 5000
+
+        audioGroups.forEachIndexed { gIdx, group ->
+            for (tIdx in 0 until group.length) {
+                val fmt = group.getTrackFormat(tIdx)
+                val lang = fmt.language?.let { Locale(it).displayLanguage }?.takeIf { it.isNotBlank() } ?: "Ses ${audioOptions.size + 1}"
+                val title = fmt.label?.takeIf { it.isNotBlank() } ?: ""
+                val mime = (fmt.sampleMimeType ?: "").substringAfter('/')
+                val ch = if (fmt.channelCount > 0) "${fmt.channelCount}ch" else ""
+                val fullLabel = listOf(lang, title, mime.uppercase(Locale.US), ch)
+                    .filter { it.isNotBlank() }
+                    .joinToString(" • ")
+                audioOptions.add(
+                    TrackOption(
+                        radioId = nextRadioId++,
+                        groupIndex = gIdx,
+                        trackIndex = tIdx,
+                        group = group,
+                        label = fullLabel,
+                        isSelected = group.isTrackSelected(tIdx)
+                    )
+                )
+            }
+        }
+
+        if (audioOptions.isEmpty()) {
+            root.addView(TextView(this).apply {
+                text = "Gömülü alternatif ses izi bulunamadı."
+                textSize = 13.5f
+                setTextColor(secondaryColor)
+                setPadding(0, 0, 0, (10 * density).toInt())
+            })
+        } else {
+            for (opt in audioOptions) {
+                val rb = RadioButton(this).apply {
+                    id = opt.radioId
+                    text = opt.label
+                    textSize = 14f
+                    setTextColor(primaryColor)
+                    isChecked = opt.isSelected
+                    setPadding((8 * density).toInt(), (6 * density).toInt(), 0, (6 * density).toInt())
+                }
+                rgAudio.addView(rb)
+            }
+            root.addView(rgAudio)
+        }
+
+        // 2. BÖLÜM: ALTYAZI SEÇİMİ
+        val tvSubHeader = TextView(this).apply {
+            text = "💬 Altyazı Seçimi (${textGroups.sumOf { it.length }})"
+            textSize = 15.5f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(tealColor)
+            setPadding(0, (16 * density).toInt(), 0, (8 * density).toInt())
+        }
+        root.addView(tvSubHeader)
+
+        val rgSub = RadioGroup(this).apply {
+            orientation = RadioGroup.VERTICAL
+        }
+
+        val subOptions = ArrayList<TrackOption>()
+        val isTextDisabled = p.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)
+        val anySubSelected = !isTextDisabled && textGroups.any { it.isSelected }
+
+        val offOptionId = nextRadioId++
+        subOptions.add(
+            TrackOption(
+                radioId = offOptionId,
+                groupIndex = -1,
+                trackIndex = -1,
+                group = null,
+                label = "Altyazı Kapalı (Yok)",
+                isSelected = !anySubSelected
+            )
+        )
+
+        textGroups.forEachIndexed { gIdx, group ->
+            for (tIdx in 0 until group.length) {
+                val fmt = group.getTrackFormat(tIdx)
+                val lang = fmt.language?.let { Locale(it).displayLanguage }?.takeIf { it.isNotBlank() } ?: "Altyazı ${subOptions.size}"
+                val title = fmt.label?.takeIf { it.isNotBlank() } ?: ""
+                val mime = (fmt.sampleMimeType ?: "").substringAfter('/')
+                val fullLabel = listOf(lang, title, mime.uppercase(Locale.US))
+                    .filter { it.isNotBlank() }
+                    .joinToString(" • ")
+                subOptions.add(
+                    TrackOption(
+                        radioId = nextRadioId++,
+                        groupIndex = gIdx,
+                        trackIndex = tIdx,
+                        group = group,
+                        label = fullLabel,
+                        isSelected = !isTextDisabled && group.isTrackSelected(tIdx)
+                    )
+                )
+            }
+        }
+
+        for (opt in subOptions) {
+            val rb = RadioButton(this).apply {
+                id = opt.radioId
+                text = opt.label
+                textSize = 14f
+                setTextColor(primaryColor)
+                isChecked = opt.isSelected
+                setPadding((8 * density).toInt(), (6 * density).toInt(), 0, (6 * density).toInt())
+            }
+            rgSub.addView(rb)
+        }
+        root.addView(rgSub)
+
+        // 3. BÖLÜM: KODEK & ÇÖZÜCÜ BİLGİSİ
+        val vf = p.videoFormat
+        val af = p.audioFormat
+        val infoText = buildString {
+            append("\nAktif Çözücü: ${binding.tvCodecBadge.text}\n")
+            if (vf != null) {
+                append("Video: ${vf.sampleMimeType ?: "-"} (${vf.width}x${vf.height})\n")
+            }
+            if (af != null) {
+                append("Ses: ${af.sampleMimeType ?: "-"} (${af.channelCount} kanal, ${af.sampleRate} Hz)")
+            }
+        }
+        root.addView(TextView(this).apply {
+            text = infoText
+            textSize = 12.5f
+            setTextColor(secondaryColor)
+        })
+
+        var dialogRef: AlertDialog? = null
+
+        rgAudio.setOnCheckedChangeListener { _, checkedId ->
+            val chosen = audioOptions.firstOrNull { it.radioId == checkedId } ?: return@setOnCheckedChangeListener
+            val grp = chosen.group ?: return@setOnCheckedChangeListener
+            p.trackSelectionParameters = p.trackSelectionParameters
+                .buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
+                .setOverrideForType(TrackSelectionOverride(grp.mediaTrackGroup, listOf(chosen.trackIndex)))
+                .build()
+            Toast.makeText(this, "Ses izi: ${chosen.label}", Toast.LENGTH_SHORT).show()
+            dialogRef?.dismiss()
+        }
+
+        rgSub.setOnCheckedChangeListener { _, checkedId ->
+            val chosen = subOptions.firstOrNull { it.radioId == checkedId } ?: return@setOnCheckedChangeListener
+            if (chosen.group == null) {
+                p.trackSelectionParameters = p.trackSelectionParameters
+                    .buildUpon()
+                    .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                    .build()
+                Toast.makeText(this, "Altyazı kapatıldı", Toast.LENGTH_SHORT).show()
+            } else {
+                p.trackSelectionParameters = p.trackSelectionParameters
+                    .buildUpon()
+                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                    .setOverrideForType(TrackSelectionOverride(chosen.group.mediaTrackGroup, listOf(chosen.trackIndex)))
+                    .build()
+                Toast.makeText(this, "Altyazı: ${chosen.label}", Toast.LENGTH_SHORT).show()
+            }
+            dialogRef?.dismiss()
+        }
+
+        dialogRef = AlertDialog.Builder(this)
+            .setTitle(if (initialFocusAudio) "Ses İzi ve Altyazı Seçimi" else "Altyazı ve Ses İzi Seçimi")
+            .setView(scroll)
+            .setNeutralButton("ÇÖZÜCÜ DEĞİŞTİR (HW/SW)") { _, _ ->
+                toggleHardwareSoftwareDecoder()
+            }
+            .setPositiveButton("TAMAM", null)
+            .create()
+        dialogRef.show()
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -568,12 +938,8 @@ class VideoPlayerActivity : AppCompatActivity() {
                 val rightBoundary = (width * 2f) / 3f
 
                 when {
-                    e.x < leftBoundary -> {
-                        seekByDelta(-10_000L)
-                    }
-                    e.x > rightBoundary -> {
-                        seekByDelta(10_000L)
-                    }
+                    e.x < leftBoundary -> seekByDelta(-10_000L)
+                    e.x > rightBoundary -> seekByDelta(10_000L)
                     else -> {
                         togglePlayPause()
                         binding.playerControlsOverlay.visibility = View.VISIBLE
@@ -597,7 +963,6 @@ class VideoPlayerActivity : AppCompatActivity() {
             gestureDetector.onTouchEvent(event)
             if (isControlsLocked) return@OnTouchListener true
 
-            val player = exoPlayer ?: return@OnTouchListener true
             val width = binding.videoPlayerRoot.width.coerceAtLeast(1).toFloat()
             val height = binding.videoPlayerRoot.height.coerceAtLeast(1).toFloat()
 
@@ -605,7 +970,12 @@ class VideoPlayerActivity : AppCompatActivity() {
                 MotionEvent.ACTION_DOWN -> {
                     downX = event.x
                     downY = event.y
-                    scrubStartPosMs = (pendingScrubTargetMs.takeIf { it >= 0L } ?: player.currentPosition).coerceAtLeast(0L)
+                    val curPos = if (usingPlatformFallback) {
+                        binding.platformVideoView.currentPosition.toLong()
+                    } else {
+                        exoPlayer?.currentPosition ?: 0L
+                    }
+                    scrubStartPosMs = (pendingScrubTargetMs.takeIf { it >= 0L } ?: curPos).coerceAtLeast(0L)
                     gestureMode = 0
                     startVolume = audioManager?.getStreamVolume(AudioManager.STREAM_MUSIC) ?: 0
                     val curBr = window.attributes.screenBrightness
@@ -627,8 +997,7 @@ class VideoPlayerActivity : AppCompatActivity() {
                     }
 
                     if (gestureMode == 1) {
-                        val effectiveDur = resolveEffectiveDuration(player)
-                        // Süre henüz bilinmiyorsa bile 2 saatlik (7200 sn) varsayılan aralıkla sarma önizlemesi yap
+                        val effectiveDur = resolveEffectiveDuration(exoPlayer)
                         val maxDur = if (effectiveDur > 0L) effectiveDur else 7_200_000L
                         val fullSwipeSpanMs = (maxDur / 6L).coerceIn(90_000L, 600_000L)
                         val deltaMs = ((dx / width) * fullSwipeSpanMs).toLong()
@@ -661,7 +1030,7 @@ class VideoPlayerActivity : AppCompatActivity() {
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     if (isLongPress2x) {
                         isLongPress2x = false
-                        player.setPlaybackSpeed(currentSpeed)
+                        exoPlayer?.setPlaybackSpeed(currentSpeed)
                         binding.tvFastPlay2xBadge.visibility = View.GONE
                     }
                     if (isHorizontalScrubbing) {
@@ -680,13 +1049,18 @@ class VideoPlayerActivity : AppCompatActivity() {
         }
 
         binding.exoPlayerView.setOnTouchListener(touchHandler)
+        binding.platformVideoView.setOnTouchListener(touchHandler)
         binding.playerControlsOverlay.setOnTouchListener(touchHandler)
     }
 
     private fun seekByDelta(deltaMs: Long) {
-        val player = exoPlayer ?: return
-        val dur = resolveEffectiveDuration(player)
-        val basePos = (pendingScrubTargetMs.takeIf { it >= 0L } ?: player.currentPosition).coerceAtLeast(0L)
+        val dur = resolveEffectiveDuration(exoPlayer)
+        val curPos = if (usingPlatformFallback) {
+            binding.platformVideoView.currentPosition.toLong()
+        } else {
+            exoPlayer?.currentPosition ?: 0L
+        }
+        val basePos = (pendingScrubTargetMs.takeIf { it >= 0L } ?: curPos).coerceAtLeast(0L)
         val target = (basePos + deltaMs).coerceIn(0L, if (dur > 0L) dur else Long.MAX_VALUE)
         executeSmartSeek(target, forceImmediate = true)
         val formatted = FormatUtils.formatDuration(target)
@@ -713,27 +1087,6 @@ class VideoPlayerActivity : AppCompatActivity() {
         )
     }
 
-    private fun showTrackInfoDialog() {
-        val p = exoPlayer ?: return
-        val formatInfo = buildString {
-            append("Dosya: $videoTitle\n")
-            append("Çözücü: ${binding.tvCodecBadge.text}\n")
-            p.videoFormat?.let { vf ->
-                val vMime = vf.sampleMimeType ?: "Bilinmiyor"
-                append("Video Kodek: $vMime (${vf.width}x${vf.height})\n")
-            }
-            p.audioFormat?.let { af ->
-                val aMime = af.sampleMimeType ?: "Bilinmiyor"
-                append("Ses Kodek: $aMime (${af.channelCount} kanal, ${af.sampleRate} Hz)\n")
-            }
-        }
-        AlertDialog.Builder(this)
-            .setTitle("Ses İzi ve Kodek Bilgisi")
-            .setMessage(formatInfo)
-            .setPositiveButton("TAMAM", null)
-            .show()
-    }
-
     private fun hideSystemBars() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         WindowInsetsControllerCompat(window, binding.videoPlayerRoot).let { controller ->
@@ -745,12 +1098,16 @@ class VideoPlayerActivity : AppCompatActivity() {
     override fun onStop() {
         super.onStop()
         exoPlayer?.pause()
+        if (usingPlatformFallback && binding.platformVideoView.isPlaying) {
+            binding.platformVideoView.pause()
+        }
     }
 
     override fun onDestroy() {
         uiHandler.removeCallbacksAndMessages(null)
         exoPlayer?.release()
         exoPlayer = null
+        binding.platformVideoView.stopPlayback()
         super.onDestroy()
     }
 }

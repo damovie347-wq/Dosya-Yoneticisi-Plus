@@ -55,13 +55,15 @@ data class UnifiedCloudSearchProgress(
 
 /**
  * Orijinal Dosya Yöneticisi + 3.6.7 ile birebir uyumlu Çoklu Bulut Motoru (Google Drive + MEGA + Dropbox + OneDrive + Box + Yandex + Nextcloud):
- * 1) Google Drive için çift izin isteme hatası tamamen kaldırıldı:
- *    - Cihazdaki açık Google hesabı (Account(email, "com.google")) üzerinden tek adımlı
+ * 1) Google Drive için e-posta/şifre sorma ve çift izin isteme hatası tamamen kaldırıldı:
+ *    - Cihazdaki açık Google hesabı (Account(email, "com.google")) üzerinden GoogleAuthUtil / AccountManager
  *      "weblogin:service=gaia&continue=..." (MergeSession) köprüsüyle şifresiz otomatik oturum açılır.
+ *    - İlk bağlantıda sistem "İzin ver" penceresi (UserRecoverableAuthException) çıkarsa tek dokunuşla onaylanır
+ *      ve hemen ardından aynı deterministik continueUrl ile MergeSession oturum çerezi alınıp doğrudan bağlanır.
  *    - Alınan OAuth 2.0 Refresh Token kalıcı olarak kaydedilir; sonraki girişlerde 0 saniyede doğrudan açılır.
  * 2) MEGA (mega.nz) bulut depolama desteği:
- *    - Hem doğrudan E-posta + Şifre (MEGA v1 & v2 PBKDF2-HMAC-SHA512 + RSA + AES-CBC düğüm şifre çözme)
- *    - Hem de 2FA destekli MEGA Web Oturum Senkronizasyonu ile klasör gezintisi ve toplu arama.
+ *    - Doğrudan E-posta + Şifre (MEGA v1 & v2 PBKDF2-HMAC-SHA512 + RSA + AES-CBC düğüm şifre çözme, -3 EAGAIN yeniden deneme)
+ *    - Otomatik E-posta/Şifre doldurmalı MEGA Web Oturum Senkronizasyonu yedeklemesi.
  */
 object CloudManager {
     private const val PREF_CLOUD_ACCOUNTS = "CloudAccountsRegistryPrefs"
@@ -82,6 +84,9 @@ object CloudManager {
 
     @Volatile
     var pendingRecoveryIntent: Intent? = null
+
+    @Volatile
+    var pendingWebLoginRecoveryIntent: Intent? = null
 
     @Volatile
     var lastCloudErrorMessage: String? = null
@@ -136,6 +141,15 @@ object CloudManager {
             current.add(account)
         }
         saveAccounts(context, current)
+    }
+
+    fun invalidateAccountAccessToken(context: Context, accountId: String) {
+        val current = getAccounts(context).toMutableList()
+        val idx = current.indexOfFirst { it.id == accountId }
+        if (idx >= 0) {
+            current[idx] = current[idx].copy(accessToken = "")
+            saveAccounts(context, current)
+        }
     }
 
     fun removeAccount(context: Context, accountId: String) {
@@ -194,10 +208,14 @@ object CloudManager {
     }
 
     /**
-     * Cihazda açık olan Google hesabı (com.google) için Android AccountManager üzerinden
-     * TEK ADIMLI "weblogin:service=gaia&continue=..." (MergeSession) otomatik oturum açma URL'si üretir.
-     * - Çift izin penceresi (UnsupportedTokenLabel tekrarı) oluşturmamak için yalnızca tek bir deterministik
-     *   AccountManager.getAuthToken çağrısı yapar ve kullanıcının "İzin ver" butonuna basmasını 25 saniyeye kadar bekler.
+     * Cihazda açık olan Google hesabı (com.google) için Google Play Hizmetleri (GoogleAuthUtil) ve
+     * Android AccountManager üzerinden şifresiz "weblogin:service=gaia&continue=..." (MergeSession)
+     * otomatik oturum açma URL'si üretir.
+     * - Orijinal APK'daki (r$e->x) gibi geçici hatalarda 2 kez dener.
+     * - Eğer cihazda bu hesap için ilk kez erişim izni ("İzin ver") gerekiyorsa
+     *   pendingWebLoginRecoveryIntent içine kaydedip null döner; kullanıcı "İzin ver" dediğinde
+     *   aynı deterministik scope ile anında MergeSession URL'sini döndürür ve hiçbir zaman
+     *   e-posta/şifre giriş ekranı göstermez!
      */
     suspend fun tryGetWebLoginMergeSessionUrl(
         context: Context,
@@ -205,12 +223,31 @@ object CloudManager {
         email: String,
         continueUrl: String
     ): String? = withContext(Dispatchers.IO) {
+        pendingWebLoginRecoveryIntent = null
         val cleanEmail = email.trim()
         if (cleanEmail.isEmpty() || !cleanEmail.contains("@")) return@withContext null
         val googleAccount = Account(cleanEmail, "com.google")
         val encodedContinue = URLEncoder.encode(continueUrl, "UTF-8")
         val scope = "weblogin:service=gaia&continue=$encodedContinue"
 
+        // 1. Öncelik: Google Play Hizmetleri (GoogleAuthUtil.getToken) - Orijinal APK yöntemi
+        for (attempt in 0 until 2) {
+            try {
+                val tokenUrl = GoogleAuthUtil.getToken(context.applicationContext, googleAccount, scope)
+                if (!tokenUrl.isNullOrBlank() && (tokenUrl.startsWith("https://") || tokenUrl.startsWith("http://"))) {
+                    return@withContext tokenUrl
+                }
+            } catch (recoverable: UserRecoverableAuthException) {
+                pendingWebLoginRecoveryIntent = recoverable.intent
+                return@withContext null
+            } catch (_: Throwable) {
+                if (attempt == 0) {
+                    delay(350L)
+                }
+            }
+        }
+
+        // 2. Yedek: Android AccountManager.getAuthToken (AccountManager.newChooseAccountIntent ile görünürlük verildiğinde çalışır)
         val am = AccountManager.get(context.applicationContext)
         try {
             @Suppress("DEPRECATION")
@@ -219,10 +256,16 @@ object CloudManager {
             } else {
                 am.getAuthToken(googleAccount, scope, null, false, null, null)
             }
-            val bundle = future.getResult(25, TimeUnit.SECONDS)
+            val bundle = future.getResult(15, TimeUnit.SECONDS)
             val tokenUrl = bundle?.getString(AccountManager.KEY_AUTHTOKEN)
             if (!tokenUrl.isNullOrBlank() && (tokenUrl.startsWith("https://") || tokenUrl.startsWith("http://"))) {
                 return@withContext tokenUrl
+            }
+            @Suppress("DEPRECATION")
+            val keyIntent = bundle?.getParcelable<Intent>(AccountManager.KEY_INTENT)
+            if (keyIntent != null) {
+                pendingWebLoginRecoveryIntent = keyIntent
+                return@withContext null
             }
         } catch (_: Throwable) {
         }
@@ -349,7 +392,8 @@ object CloudManager {
      * Seçilen Google Drive hesabı için geçerli OAuth2 Bearer Token döndürür:
      * 1) Mevcut access_token varsa (ve forceRefresh değilse) doğrudan kullanır.
      * 2) Refresh token varsa https://oauth2.googleapis.com/token ile arka planda sessizce yeniler.
-     * 3) Henüz yetkilendirilmemiş yeni bir hesapsa çift izin diyaloğu açmadan doğrudan MergeSession/OAuth akışına yönlendirir.
+     * 3) Eğer access_token süresi dolmuşsa ve refresh_token yoksa geçersiz access_token'ı temizler
+     *    (böylece sonsuz aktivite döngüsü oluşmaz).
      */
     suspend fun resolveGoogleDriveToken(context: Context, account: CloudAccount, forceRefresh: Boolean = false): String =
         withContext(Dispatchers.IO) {
@@ -371,7 +415,11 @@ object CloudManager {
                 }
             }
 
-            // GoogleAuthUtil doğrudan kontrolü (yalnızca tek scope, AccountManager GrantCredentialsPermission çağrısı YOK)
+            if (forceRefresh && latestAcc.accessToken.isNotBlank()) {
+                invalidateAccountAccessToken(context.applicationContext, latestAcc.id)
+            }
+
+            // GoogleAuthUtil doğrudan kontrolü (yalnızca gerçek OAuth Consent ekranıysa kullan, GrantCredentialsPermission ise atla)
             val googleAccount = Account(latestAcc.emailOrName.trim(), "com.google")
             try {
                 val token = GoogleAuthUtil.getToken(context.applicationContext, googleAccount, DRIVE_OAUTH_SCOPE)
@@ -381,16 +429,15 @@ object CloudManager {
                     return@withContext token
                 }
             } catch (recoverable: UserRecoverableAuthException) {
-                // Yalnızca gerçek OAuth Consent ekranıysa kullan, UnsupportedTokenLabel (GrantCredentialsPermission) ise atla
                 val comp = recoverable.intent?.component?.className ?: ""
                 if (!comp.contains("GrantCredentialsPermission", ignoreCase = true)) {
                     pendingRecoveryIntent = recoverable.intent
-                    return@withContext latestAcc.accessToken
+                    return@withContext ""
                 }
             } catch (_: Exception) {
             }
 
-            needsWebOAuthFallbackForAccount = latestAcc
+            needsWebOAuthFallbackForAccount = latestAcc.copy(accessToken = "")
             ""
         }
 
@@ -492,7 +539,7 @@ object CloudManager {
                 val errCode = usFirst.toInt()
                 lastCloudErrorMessage = when (errCode) {
                     -9 -> "MEGA e-posta veya şifre hatalı."
-                    -26 -> "MEGA hesabınızda 2FA (İki Faktörlü Doğrulama) açık. Lütfen 'MEGA Web ile Giriş Yap' seçeneğini kullanın."
+                    -26 -> "MEGA hesabınızda 2FA (İki Faktörlü Doğrulama) açık."
                     else -> "MEGA giriş hatası (Kod: $errCode)."
                 }
                 return@withContext null
@@ -502,10 +549,14 @@ object CloudManager {
             val encMasterKey = megaBase64Decode(usObj.optString("k"))
             val masterKey = aesEcbDecrypt(pwKey, encMasterKey).copyOfRange(0, 16)
 
-            val encPrivk = megaBase64Decode(usObj.optString("privk"))
-            val privkDec = aesEcbDecrypt(masterKey, encPrivk)
-            val csidEnc = megaBase64Decode(usObj.optString("csid"))
-            val sid = decryptMegaRsaSessionId(privkDec, csidEnc)
+            val sid = if (usObj.has("csid") && usObj.has("privk")) {
+                val encPrivk = megaBase64Decode(usObj.optString("privk"))
+                val privkDec = aesEcbDecrypt(masterKey, encPrivk)
+                val csidEnc = megaBase64Decode(usObj.optString("csid"))
+                decryptMegaRsaSessionId(privkDec, csidEnc)
+            } else {
+                ""
+            }
             if (sid.isBlank()) {
                 lastCloudErrorMessage = "MEGA oturum anahtarı (SID) çözülemedi."
                 return@withContext null
@@ -588,7 +639,7 @@ object CloudManager {
     private fun searchMega(context: Context, account: CloudAccount, query: String): List<FileItem> {
         val allNodes = fetchAllMegaNodesForAccount(context, account)
         if (query.isBlank()) return allNodes.filter { it.parentId == "root" }
-        return allNodes.filter { it.name.contains(query, ignoreCase = true) }
+        return allNodes.filter { matchesSmartSearchQuery(it.name, query) }
     }
 
     private fun fetchAllMegaNodesForAccount(context: Context, account: CloudAccount): List<FileItem> {
@@ -706,27 +757,51 @@ object CloudManager {
         }
     }
 
+    /**
+     * MEGA API sunucusu geçici yoğunlukta -3 (EAGAIN) döndürebilir; 4 kez artan gecikmeyle yeniden dener.
+     */
     private fun postMegaApi(jsonPayload: String, sid: String?): String? {
-        val seq = (System.currentTimeMillis() and 0xFFFFF)
-        val url = if (!sid.isNullOrBlank()) {
-            "https://g.api.mega.co.nz/cs?id=$seq&sid=$sid"
-        } else {
-            "https://g.api.mega.co.nz/cs?id=$seq"
+        for (attempt in 0 until 4) {
+            try {
+                val seq = (System.currentTimeMillis() and 0xFFFFF) + attempt
+                val url = if (!sid.isNullOrBlank()) {
+                    "https://g.api.mega.co.nz/cs?id=$seq&sid=$sid"
+                } else {
+                    "https://g.api.mega.co.nz/cs?id=$seq"
+                }
+                val req = Request.Builder()
+                    .url(url)
+                    .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/128.0.0.0")
+                    .post(jsonPayload.toRequestBody("application/json".toMediaType()))
+                    .build()
+                httpClient.newCall(req).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        val body = resp.body?.string()?.trim()
+                        if (!body.isNullOrBlank()) {
+                            // -3 (EAGAIN) ise tekrar dene
+                            if (body == "-3" || body == "[-3]") {
+                                Thread.sleep(300L * (attempt + 1))
+                            } else {
+                                return body
+                            }
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+                try {
+                    Thread.sleep(250L * (attempt + 1))
+                } catch (_: InterruptedException) {
+                }
+            }
         }
-        val req = Request.Builder()
-            .url(url)
-            .post(jsonPayload.toRequestBody("application/json".toMediaType()))
-            .build()
-        httpClient.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) return null
-            return resp.body?.string()
-        }
+        return null
     }
 
     private fun decryptMegaNodeName(masterKey: ByteArray, kStr: String, aStr: String, isFolder: Boolean): String {
         if (kStr.isBlank() || aStr.isBlank()) return ""
         return try {
-            val keyPartB64 = kStr.substringAfter(':').substringBefore('/')
+            val keySegment = kStr.split('/').firstOrNull { it.contains(':') } ?: kStr
+            val keyPartB64 = keySegment.substringAfter(':').substringBefore('/')
             val encNodeKey = megaBase64Decode(keyPartB64)
             if (encNodeKey.size < 16) return ""
             val decNodeKey = aesEcbDecrypt(masterKey, encNodeKey)
@@ -739,9 +814,11 @@ object CloudManager {
                 System.arraycopy(decNodeKey, 0, attrKey, 0, 16)
             }
             val encAttr = megaBase64Decode(aStr)
+            val alignedAttrLen = (encAttr.size / 16) * 16
+            if (alignedAttrLen == 0) return ""
             val cipher = Cipher.getInstance("AES/CBC/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(attrKey, "AES"), IvParameterSpec(ByteArray(16)))
-            val decAttr = cipher.doFinal(encAttr)
+            val decAttr = cipher.doFinal(encAttr.copyOfRange(0, alignedAttrLen))
             val rawStr = String(decAttr, Charsets.UTF_8).trim { it <= ' ' || it == '\u0000' }
             if (rawStr.startsWith("MEGA{")) {
                 val jsonPart = rawStr.removePrefix("MEGA").substringBeforeLast('}') + "}"
@@ -755,28 +832,47 @@ object CloudManager {
     private fun decryptMegaRsaSessionId(privkDec: ByteArray, csidEnc: ByteArray): String {
         return try {
             var pos = 0
-            fun readMpi(): BigInteger {
-                val bitLen = ((privkDec[pos].toInt() and 0xFF) shl 8) or (privkDec[pos + 1].toInt() and 0xFF)
+            fun readMpi(buf: ByteArray): BigInteger {
+                if (pos + 2 > buf.size) return BigInteger.ZERO
+                val bitLen = ((buf[pos].toInt() and 0xFF) shl 8) or (buf[pos + 1].toInt() and 0xFF)
                 val byteLen = (bitLen + 7) / 8
                 pos += 2
-                val slice = privkDec.copyOfRange(pos, (pos + byteLen).coerceAtMost(privkDec.size))
-                pos += byteLen
+                val end = (pos + byteLen).coerceAtMost(buf.size)
+                val slice = buf.copyOfRange(pos, end)
+                pos = end
                 return BigInteger(1, slice)
             }
-            val p = readMpi()
-            val q = readMpi()
-            val d = readMpi()
+            val p = readMpi(privkDec)
+            val q = readMpi(privkDec)
+            val d = readMpi(privkDec)
             val n = p.multiply(q)
+            if (n == BigInteger.ZERO) return ""
 
-            val csidSkip = if (csidEnc.size > 2 && ((csidEnc[0].toInt() and 0xFF) shl 8 or (csidEnc[1].toInt() and 0xFF)) <= csidEnc.size * 8) {
-                csidEnc.copyOfRange(2, csidEnc.size)
+            val csidBig = if (csidEnc.size > 2) {
+                val bitLen = ((csidEnc[0].toInt() and 0xFF) shl 8) or (csidEnc[1].toInt() and 0xFF)
+                val byteLen = (bitLen + 7) / 8
+                if (byteLen in 1..(csidEnc.size - 2)) {
+                    BigInteger(1, csidEnc.copyOfRange(2, 2 + byteLen))
+                } else {
+                    BigInteger(1, csidEnc)
+                }
             } else {
-                csidEnc
+                BigInteger(1, csidEnc)
             }
-            val m = BigInteger(1, csidSkip).modPow(d, n)
+
+            val m = csidBig.modPow(d, n)
             var mBytes = m.toByteArray()
             if (mBytes.isNotEmpty() && mBytes[0].toInt() == 0) {
                 mBytes = mBytes.copyOfRange(1, mBytes.size)
+            }
+            // MEGA RSA csid padding sıfırlarını hizala (256 byte RSA bloğu)
+            val targetByteLen = (n.bitLength() + 7) / 8
+            if (mBytes.size < targetByteLen - 2 && targetByteLen > 43) {
+                val padded = ByteArray(targetByteLen)
+                System.arraycopy(mBytes, 0, padded, targetByteLen - mBytes.size, mBytes.size)
+                // İlk 0x00 veya 0x02 sonrası anlamlı 43 baytı al
+                val offset = if (padded[0].toInt() == 0 && padded[1].toInt() in 0..2) 2 else 0
+                mBytes = padded.copyOfRange(offset, padded.size)
             }
             val sidBytes = mBytes.copyOfRange(0, 43.coerceAtMost(mBytes.size))
             megaBase64Encode(sidBytes)
@@ -868,6 +964,32 @@ object CloudManager {
     // =========================================================================
     // Çoklu Bulut Arama ve Klasör Listeleme
     // =========================================================================
+
+    private fun normalizeForSmartSearch(text: String): String {
+        return text
+            .lowercase(Locale("tr", "TR"))
+            .lowercase(Locale.US)
+            .replace('ı', 'i')
+            .replace('ğ', 'g')
+            .replace('ü', 'u')
+            .replace('ş', 's')
+            .replace('ö', 'o')
+            .replace('ç', 'c')
+            .replace('.', ' ')
+            .replace('_', ' ')
+            .replace('-', ' ')
+    }
+
+    fun matchesSmartSearchQuery(fileName: String, query: String): Boolean {
+        val q = query.trim()
+        if (q.isEmpty()) return true
+        if (fileName.contains(q, ignoreCase = true)) return true
+        val normName = normalizeForSmartSearch(fileName)
+        val normQuery = normalizeForSmartSearch(q)
+        if (normName.contains(normQuery)) return true
+        val tokens = normQuery.split(Regex("\\s+")).filter { it.isNotEmpty() }
+        return tokens.isNotEmpty() && tokens.all { token -> normName.contains(token) }
+    }
 
     suspend fun searchAcrossAllAccounts(
         context: Context,
@@ -979,7 +1101,7 @@ object CloudManager {
             CloudProviderType.ONEDRIVE -> searchOneDrive(account, query)
             CloudProviderType.BOX -> searchBox(account, query)
             CloudProviderType.NEXTCLOUD -> listWebDavFolder(account, "/").filter {
-                query.isEmpty() || it.name.contains(query, ignoreCase = true)
+                matchesSmartSearchQuery(it.name, query)
             }
             CloudProviderType.YANDEX -> searchYandex(account, query)
         }
@@ -991,14 +1113,40 @@ object CloudManager {
         return executeGoogleDriveQuery(context, account, q, folderId)
     }
 
+    /**
+     * Google Drive API'nin `name contains '...'` sorgusu nokta/altçizgi içeren dosya adlarında
+     * (örn. `DDLBase.com_The.Avengers.2012.UHD...mkv`) kelime ortasını bulamayabilir.
+     * Bu yüzden hem doğrudan API araması hem de hesaptaki tüm dosyalar (`trashed = false`, 1000 öğe)
+     * üzerinde akıllı alt-dizge/kelime eşleşmesi birlikte çalıştırılır!
+     */
     private suspend fun searchGoogleDrive(context: Context, account: CloudAccount, query: String): List<FileItem> {
-        val escaped = query.replace("'", "\\'")
-        val q = if (escaped.isEmpty()) {
-            "trashed = false"
-        } else {
-            "name contains '$escaped' and trashed = false"
+        val trimmed = query.trim()
+        if (trimmed.isEmpty()) {
+            return executeGoogleDriveQuery(context, account, "trashed = false", "root")
         }
-        return executeGoogleDriveQuery(context, account, q, "root")
+        val escaped = trimmed.replace("'", "\\'")
+        val directMatches = executeGoogleDriveQuery(
+            context,
+            account,
+            "name contains '$escaped' and trashed = false",
+            "root"
+        )
+        val allAccountFiles = executeGoogleDriveQuery(
+            context,
+            account,
+            "trashed = false",
+            "root"
+        )
+        val combined = LinkedHashMap<String, FileItem>()
+        for (item in directMatches) {
+            combined[item.id] = item
+        }
+        for (item in allAccountFiles) {
+            if (matchesSmartSearchQuery(item.name, trimmed)) {
+                combined[item.id] = item
+            }
+        }
+        return combined.values.toList()
     }
 
     private suspend fun executeGoogleDriveQuery(
@@ -1016,7 +1164,7 @@ object CloudManager {
         }
 
         var responsePair = performDriveHttpQuery(token, q)
-        if (responsePair.first == 401) {
+        if (responsePair.first == 401 || responsePair.first == 403) {
             token = resolveGoogleDriveToken(context, account, forceRefresh = true)
             if (token.isNotBlank()) {
                 responsePair = performDriveHttpQuery(token, q)
@@ -1027,7 +1175,8 @@ object CloudManager {
         val body = responsePair.second
         if (code !in 200..299 || body.isNullOrBlank()) {
             if (code == 401 || code == 403) {
-                needsWebOAuthFallbackForAccount = account
+                invalidateAccountAccessToken(context.applicationContext, account.id)
+                needsWebOAuthFallbackForAccount = account.copy(accessToken = "")
                 lastCloudErrorMessage = "Google Drive oturumu yenilenmeli (HTTP $code)."
             } else if (code > 0) {
                 lastCloudErrorMessage = "Google Drive bağlantı hatası (HTTP $code)."
@@ -1087,7 +1236,7 @@ object CloudManager {
         val url = "https://www.googleapis.com/drive/v3/files" +
             "?q=" + URLEncoder.encode(q, "UTF-8") +
             "&fields=" + URLEncoder.encode(fields, "UTF-8") +
-            "&pageSize=500&supportsAllDrives=true&includeItemsFromAllDrives=true"
+            "&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true"
         val req = Request.Builder()
             .url(url)
             .header("Authorization", "Bearer $token")
@@ -1355,7 +1504,7 @@ object CloudManager {
     private fun searchYandex(account: CloudAccount, query: String): List<FileItem> {
         if (account.accessToken.isBlank()) return emptyList()
         val req = Request.Builder()
-            .url("https://cloud-api.yandex.net/v1/disk/resources/files?limit=200")
+            .url("https://cloud-api.yandex.net/v1/disk/resources/files?limit=500")
             .header("Authorization", "OAuth ${account.accessToken}")
             .get()
             .build()
@@ -1364,7 +1513,7 @@ object CloudManager {
             val json = JSONObject(resp.body?.string() ?: return emptyList())
             val items = json.optJSONArray("items") ?: return emptyList()
             return parseYandexItems(account, items).filter {
-                query.isBlank() || it.name.contains(query, ignoreCase = true)
+                matchesSmartSearchQuery(it.name, query)
             }
         }
     }

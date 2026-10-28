@@ -10,11 +10,11 @@
         android:layout_width="match_parent"
         android:layout_height="56dp"
         android:background="@color/toolbar_dark"
+        android:elevation="4dp"
         android:gravity="center_vertical"
         android:orientation="horizontal"
         android:paddingStart="6dp"
-        android:paddingEnd="8dp"
-        android:elevation="4dp">
+        android:paddingEnd="6dp">
 
         <ImageButton
             android:id="@+id/btnAnalysisBack"
@@ -29,10 +29,30 @@
             android:layout_height="wrap_content"
             android:layout_marginStart="10dp"
             android:layout_weight="1"
+            android:singleLine="true"
             android:text="@string/storage_analysis"
             android:textColor="#FFFFFF"
             android:textSize="18sp"
             android:textStyle="bold" />
+
+        <!-- Klasör Boyutu Gezgininde (Video 03:50 - 03:54 Sarı Çember İçi) Sağ Üstte Görünen 🔍 ve ⇵ İkonları -->
+        <ImageButton
+            android:id="@+id/btnAnalysisSearch"
+            android:layout_width="42dp"
+            android:layout_height="42dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Ara"
+            android:padding="9dp"
+            android:src="@drawable/ic_search_white" />
+
+        <ImageButton
+            android:id="@+id/btnAnalysisSortAndView"
+            android:layout_width="42dp"
+            android:layout_height="42dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Sırala ve Gizli Dosyalar"
+            android:padding="9dp"
+            android:src="@drawable/ic_ab_view_settings" />
 
         <ImageButton
             android:id="@+id/btnAnalysisRefresh"
@@ -42,7 +62,6 @@
             android:src="@drawable/ic_more_vert" />
     </LinearLayout>
 
-    <!-- Yükleniyor Durumu (00:05: "Yinelenen dosyalar analiz ediliyor...") -->
     <LinearLayout
         android:id="@+id/llAnalysisLoading"
         android:layout_width="match_parent"
@@ -66,7 +85,6 @@
             android:textSize="14sp" />
     </LinearLayout>
 
-    <!-- Analiz Sonuç Kartları (00:06) -->
     <ScrollView
         android:id="@+id/svAnalysisContent"
         android:layout_width="match_parent"
@@ -78,7 +96,6 @@
             android:orientation="vertical"
             android:padding="12dp">
 
-            <!-- Kart 1: Ana Bellek Kategori Dağılımı -->
             <LinearLayout
                 android:id="@+id/cardStorageBreakdown"
                 android:layout_width="match_parent"
@@ -142,7 +159,6 @@
                     android:textSize="13sp" />
             </LinearLayout>
 
-            <!-- Kart 2: Yinelenen Dosyalar -->
             <LinearLayout
                 android:id="@+id/cardDuplicates"
                 android:layout_width="match_parent"
@@ -185,7 +201,6 @@
                     android:orientation="vertical" />
             </LinearLayout>
 
-            <!-- Kart 3: Büyük Dosyalar (> 10 MB) -->
             <LinearLayout
                 android:id="@+id/cardLargeFiles"
                 android:layout_width="match_parent"

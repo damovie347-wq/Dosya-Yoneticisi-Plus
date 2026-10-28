@@ -32,13 +32,21 @@
             android:textColor="#FFFFFF"
             android:textSize="18sp"
             android:textStyle="bold" />
+
+        <ImageButton
+            android:id="@+id/btnNetworkAddToHome"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Ana ekrana kısayol ekle"
+            android:padding="10dp"
+            android:src="@drawable/ic_add_to_homescreen" />
     </LinearLayout>
 
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="match_parent">
 
-        <!-- Orijinal fragment_server.xml (Video 3 00:20 - 00:28): 312dp genişliğinde İnce Turkuaz Çerçeveli Kart -->
         <LinearLayout
             android:id="@+id/networkCard"
             android:layout_width="312dp"
@@ -49,14 +57,12 @@
             android:gravity="center_horizontal"
             android:orientation="vertical">
 
-            <!-- ÜST BÖLÜM (minHeight=215dp): Başlatmadan Önce Ayar Formu, Başlatıldıktan Sonra FTP Bilgileri -->
             <FrameLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:minHeight="215dp"
                 android:padding="18dp">
 
-                <!-- 1. DURUM: Hizmet Durdurulmuşken Görünen Ayar Formu (Video 3 00:20) -->
                 <LinearLayout
                     android:id="@+id/llFtpSetupForm"
                     android:layout_width="match_parent"
@@ -142,7 +148,6 @@
                         android:textSize="13.5sp" />
                 </LinearLayout>
 
-                <!-- 2. DURUM: Hizmet Çalışırken Görünen Bilgi Paneli (Video 3 00:23 - 00:28 Mavi Yuvarlak İçi) -->
                 <LinearLayout
                     android:id="@+id/llFtpRunningInfo"
                     android:layout_width="match_parent"
@@ -202,14 +207,12 @@
                 </LinearLayout>
             </FrameLayout>
 
-            <!-- Orta Ayırıcı Çizgi -->
             <View
                 android:id="@+id/dividerFtpCard"
                 android:layout_width="match_parent"
                 android:layout_height="1dp"
                 android:background="#80008578" />
 
-            <!-- ALT BÖLÜM (minHeight=120dp): Durum Açıklaması ve BAŞLAT / HİZMETİ DURDUR Butonu -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"

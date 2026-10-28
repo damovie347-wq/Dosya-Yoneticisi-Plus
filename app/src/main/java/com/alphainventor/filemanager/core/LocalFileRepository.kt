@@ -1039,15 +1039,19 @@ object LocalFileRepository {
      */
     suspend fun getFolderSizeDrillDownItems(
         dirPath: String,
-        report: StorageAnalysisReport
+        report: StorageAnalysisReport,
+        forceShowHidden: Boolean = false,
+        sortBy: Int = 1,
+        sortAsc: Boolean = false
     ): List<FileItem> = withContext(Dispatchers.IO) {
         val dir = File(dirPath)
         val children = dir.listFiles() ?: return@withContext emptyList()
-        val showHidden = AppSettings.showHiddenFiles
-        val items = ArrayList<FileItem>(children.size)
+        val nonRecycle = children.filter { it.name != ".DosyaYoneticisiPlus_RecycleBin" }
+        val hasVisibleChildren = nonRecycle.any { !it.name.startsWith(".") }
+        val showHidden = forceShowHidden || AppSettings.showHiddenFiles || !hasVisibleChildren
+        val items = ArrayList<FileItem>(nonRecycle.size)
 
-        for (f in children) {
-            if (f.name == ".DosyaYoneticisiPlus_RecycleBin") continue
+        for (f in nonRecycle) {
             if (!showHidden && f.name.startsWith(".")) continue
             val isDir = f.isDirectory
             val totalSize = if (isDir) {
@@ -1055,8 +1059,10 @@ object LocalFileRepository {
             } else {
                 f.length()
             }
-            val directCount = if (isDir) {
-                f.list()?.count { showHidden || !it.startsWith(".") } ?: 0
+            val subList = if (isDir) f.list() else null
+            val directCount = if (isDir && subList != null) {
+                val vis = subList.count { showHidden || !it.startsWith(".") }
+                if (vis == 0 && subList.isNotEmpty()) subList.size else vis
             } else 0
             items.add(
                 FileItem(
@@ -1071,7 +1077,12 @@ object LocalFileRepository {
                 )
             )
         }
-        items.sortedWith(compareByDescending<FileItem> { it.size }.thenBy { it.name.lowercase(Locale("tr", "TR")) })
+        when (sortBy) {
+            0 -> if (sortAsc) items.sortedBy { it.name.lowercase(Locale("tr", "TR")) } else items.sortedByDescending { it.name.lowercase(Locale("tr", "TR")) }
+            2 -> if (sortAsc) items.sortedBy { it.lastModified } else items.sortedByDescending { it.lastModified }
+            else -> if (sortAsc) items.sortedWith(compareBy<FileItem> { it.size }.thenBy { it.name.lowercase(Locale("tr", "TR")) })
+                    else items.sortedWith(compareByDescending<FileItem> { it.size }.thenBy { it.name.lowercase(Locale("tr", "TR")) })
+        }
     }
 
     private fun computeDirectorySizeBounded(dir: File, depth: Int): Long {
@@ -1243,6 +1254,13 @@ object LocalFileRepository {
                     if (sf.exists()) size += sf.length()
                 }
             }
+            val extRoot = rootStorageDir
+            val obbDir = File(extRoot, "Android/obb/${pkg.packageName}")
+            if (obbDir.exists()) size += computeDirectorySizeBounded(obbDir, 1)
+            val mediaDir = File(extRoot, "Android/media/${pkg.packageName}")
+            if (mediaDir.exists()) size += computeDirectorySizeBounded(mediaDir, 1)
+            val dataDir = File(extRoot, "Android/data/${pkg.packageName}")
+            if (dataDir.exists()) size += computeDirectorySizeBounded(dataDir, 1)
             // İkonu arka planda önbelleğe al (120Hz sıfır takılmalı kaydırma için)
             if (ThumbnailCacheManager.getCachedAppIcon(pkg.packageName) == null) {
                 try {

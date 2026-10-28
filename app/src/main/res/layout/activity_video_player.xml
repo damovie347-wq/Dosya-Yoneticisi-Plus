@@ -14,9 +14,18 @@
         android:layout_height="match_parent"
         app:resize_mode="fit"
         app:show_buffering="never"
+        app:surface_type="surface_view"
         app:use_controller="false" />
 
-    <!-- Orijinal activity_videoplayer.xml (Video 5 00:54-00:55): Kutusu olmayan 48sp gölgeli saf beyaz süre göstergesi (00:55, 00:19) -->
+    <!-- Donanım Platform VideoView Yedeği -->
+    <VideoView
+        android:id="@+id/platformVideoView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_gravity="center"
+        android:visibility="gone" />
+
+    <!-- Orijinal activity_videoplayer.xml: Kutusu olmayan 46sp gölgeli saf beyaz süre göstergesi -->
     <TextView
         android:id="@+id/tvCenterSeekOverlay"
         android:layout_width="wrap_content"
@@ -34,7 +43,7 @@
         android:textStyle="normal"
         android:visibility="gone" />
 
-    <!-- Orijinal Basılı Tutunca 2X Hızlı Oynatma Rozeti -->
+    <!-- Basılı Tutunca 2X Hızlı Oynatma Rozeti -->
     <TextView
         android:id="@+id/tvFastPlay2xBadge"
         android:layout_width="wrap_content"
@@ -52,7 +61,7 @@
         android:textStyle="bold"
         android:visibility="gone" />
 
-    <!-- Orijinal Turkuaz Dairesel Yükleme Halkası -->
+    <!-- Turkuaz Dairesel Yükleme Halkası -->
     <ProgressBar
         android:id="@+id/pbVideoBuffering"
         android:layout_width="56dp"
@@ -61,13 +70,13 @@
         android:indeterminateTint="#80CBC4"
         android:visibility="gone" />
 
-    <!-- Orijinal Dosya Yöneticisi + 3.6.7 Video Oynatıcı Arayüzü (video_playback_control_view.xml birebir karşılığı) -->
+    <!-- Orijinal Dosya Yöneticisi + 3.6.7 Video Oynatıcı Arayüzü -->
     <RelativeLayout
         android:id="@+id/playerControlsOverlay"
         android:layout_width="match_parent"
         android:layout_height="match_parent">
 
-        <!-- Üst Bar: Geri Oku + Dosya Adı + Sağda Üç Nokta -->
+        <!-- Üst Bar: Geri Oku + Dosya Adı + Çözücü Rozeti + Üç Nokta -->
         <LinearLayout
             android:id="@+id/topVideoBar"
             android:layout_width="match_parent"
@@ -104,9 +113,16 @@
             <TextView
                 android:id="@+id/tvCodecBadge"
                 android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
+                android:layout_height="28dp"
+                android:layout_marginEnd="4dp"
+                android:background="@drawable/bg_used_pill"
+                android:gravity="center"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
                 android:text="HW+"
-                android:visibility="gone" />
+                android:textColor="#FFFFFF"
+                android:textSize="12sp"
+                android:textStyle="bold" />
 
             <ImageButton
                 android:id="@+id/btnVideoMore"
@@ -118,7 +134,7 @@
                 android:src="@drawable/ic_more_vert" />
         </LinearLayout>
 
-        <!-- Alt Kontrol Paneli (Orijinal video_playback_control_view.xml - Video 5 00:57-01:00) -->
+        <!-- Alt Kontrol Paneli -->
         <LinearLayout
             android:id="@+id/bottomVideoBar"
             android:layout_width="match_parent"
@@ -126,7 +142,7 @@
             android:layout_alignParentBottom="true"
             android:orientation="vertical">
 
-            <!-- İlerleme Çubuğunun Sağ Üstündeki Kilit (🔒) ve Ekran Döndürme (🔄) İkonları -->
+            <!-- İlerleme Çubuğunun Sağ Üstündeki Ses İzi (🎵), Altyazı (💬), Kilit (🔒) ve Döndürme (🔄) İkonları (Video 01:13 ??) -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -136,10 +152,30 @@
                 android:paddingBottom="4dp">
 
                 <ImageButton
+                    android:id="@+id/btnQuickAudioTrack"
+                    android:layout_width="44dp"
+                    android:layout_height="44dp"
+                    android:layout_marginEnd="4dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="Ses İzi Seç"
+                    android:padding="10dp"
+                    android:src="@drawable/ic_vp_volume_on" />
+
+                <ImageButton
+                    android:id="@+id/btnQuickSubtitleTrack"
+                    android:layout_width="44dp"
+                    android:layout_height="44dp"
+                    android:layout_marginEnd="4dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="Altyazı Seç"
+                    android:padding="10dp"
+                    android:src="@drawable/ic_vp_subtitles" />
+
+                <ImageButton
                     android:id="@+id/btnLockControls"
                     android:layout_width="44dp"
                     android:layout_height="44dp"
-                    android:layout_marginEnd="6dp"
+                    android:layout_marginEnd="4dp"
                     android:background="?attr/selectableItemBackgroundBorderless"
                     android:contentDescription="Kilitle"
                     android:padding="10dp"
@@ -166,7 +202,7 @@
                 android:paddingEnd="12dp"
                 android:paddingBottom="8dp">
 
-                <!-- İlerleme Çubuğu (00:01 ——●———————— 02:42) -->
+                <!-- İlerleme Çubuğu -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="34dp"
@@ -207,7 +243,7 @@
                         android:textSize="13.5sp" />
                 </LinearLayout>
 
-                <!-- Orijinal Video 5 (00:59) Açılır 2. Satır: Karıştır (🔀) | Tekrar (🔁) | 1X Hız | 90° Döndür (⟲) | Ses/Altyazı -->
+                <!-- Açılır 2. Satır: Karıştır (🔀) | Tekrar (🔁) | 1X Hız | Ses/Altyazı (💬) -->
                 <LinearLayout
                     android:id="@+id/llExtraVideoControls"
                     android:layout_width="match_parent"
@@ -261,7 +297,7 @@
                         android:src="@drawable/ic_vp_subtitles" />
                 </LinearLayout>
 
-                <!-- Ana Alt Kontrol Satırı (Video 5 00:57-00:59: En-Boy Oranı [⤢] | Önceki |◀ | Oynat/Duraklat ▶/|| | Sonraki ▶| | Döndür/Genişlet ⟲) -->
+                <!-- Ana Alt Kontrol Satırı -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="52dp"
@@ -323,7 +359,7 @@
         </LinearLayout>
     </RelativeLayout>
 
-    <!-- Kilit Açma Butonu (Kilitliyken Sağ Altta Görünür) -->
+    <!-- Kilit Açma Butonu -->
     <ImageButton
         android:id="@+id/btnUnlockOverlay"
         android:layout_width="52dp"

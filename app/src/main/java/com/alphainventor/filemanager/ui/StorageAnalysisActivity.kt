@@ -1,6 +1,7 @@
 package com.alphainventor.filemanager.ui
 
 import android.content.Intent
+import android.content.res.ColorStateList
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -15,16 +16,18 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.CheckBox
+import android.widget.EditText
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.PopupMenu
 import android.widget.ProgressBar
-import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.widget.CompoundButtonCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -35,29 +38,24 @@ import com.alphainventor.filemanager.core.StorageAnalysisReport
 import com.alphainventor.filemanager.databinding.ActivityStorageAnalysisBinding
 import com.alphainventor.filemanager.model.FileItem
 import com.alphainventor.filemanager.theme.ThemeManager
+import com.alphainventor.filemanager.util.AppSettings
 import com.alphainventor.filemanager.util.FormatUtils
 import com.alphainventor.filemanager.util.ThumbnailCacheManager
 import com.alphainventor.filemanager.viewer.ImageViewerActivity
 import com.alphainventor.filemanager.viewer.MusicPlayerActivity
 import com.alphainventor.filemanager.viewer.VideoPlayerActivity
+import com.google.android.material.bottomsheet.BottomSheetBehavior
+import com.google.android.material.bottomsheet.BottomSheetDialog
 import kotlinx.coroutines.launch
-import java.io.File
 import java.util.Locale
 import java.util.Stack
 
 /**
- * Orijinal Dosya Yöneticisi + 3.6.7 Bellek Analizi Ekranı (Video 5: 00:04 - 00:36):
- * 1) Ana Kartlar Görünümü (card_analysis_type_size.xml & card_files.xml):
- *    - Ana bellek (Boş 45,67 GB | 64% | Görüntüler, Ses, Videolar, Belgeler, Arşivler, Diğerleri | DAHA FAZLA)
- *    - Uygulamalar (22,11 GB | En büyük uygulamalar | DAHA FAZLA)
- *    - Büyük dosyalar (28,19 GB | 10 MB'den büyük dosyalar | DAHA FAZLA)
- *    - Ön bellek dosyaları (SİL)
- *    - Yinelenen dosyalar (SİL | DAHA FAZLA)
- * 2) "DAHA FAZLA" veya klasörlere tıklanınca açılan Orijinal Klasör İçi Boyut Gezgini (Video 5: 00:09 - 00:23):
- *    - Klasörlerin ve dosyaların arkasında orijinal yeşil/mavi yüzdelik doluluk çubuğu (clip_storage_total & clip_current_folder)
- *      ve sağda "12,07%", "6,33%", "4,43%" yüzdesi yer alır.
- *    - Herhangi bir klasöre (Download -> 1DMP -> Compressed -> Alien...) tıkladığınızda sıra sıra içine girip
- *      alt klasörlerin boyutlarını ve videoları gösterir!
+ * Orijinal Dosya Yöneticisi + 3.6.7 Bellek Analizi Ekranı (Video 03:39 - 04:11):
+ * - Sağ üst araç çubuğunda 🔍 (Ara), ⇵ (Sırala ve Gizli Dosyaları Göster alt paneli) ve ⋮ (Menü) butonları yer alır.
+ * - ⇵ butonuna basıldığında Orijinal Alt Panel (Video 03:56 - 04:05: Sırala: Boyut ▼ | Diğerleri: Gizli dosyaları göster [✓])
+ *   tam boyutta (STATE_EXPANDED) açılır; gömülü kalmaz!
+ * - Klasörlere (örn. Music -> .thumbnails 2,22 MB) tıklandığında yeniden tarama yapmadan 0ms'de içine girer.
  */
 class StorageAnalysisActivity : AppCompatActivity() {
 
@@ -66,9 +64,13 @@ class StorageAnalysisActivity : AppCompatActivity() {
     private var currentVolumeTitle: String = "Ana bellek"
     private var currentReport: StorageAnalysisReport? = null
 
-    // 0 = Ana Analiz Kartları, 1 = Klasör Boyutu Sıralı Gezgin (Video 5 00:09-00:23), 2 = Tüm Büyük Dosyalar Listesi (Video 5 00:30-00:33)
+    // 0 = Ana Analiz Kartları, 1 = Klasör Boyutu Sıralı Gezgin, 2 = Tüm Büyük Dosyalar Listesi
     private var viewState: Int = 0
     private val drillDownStack = Stack<String>()
+
+    private var analysisSortBy: Int = 1 // 0: Ad, 1: Boyut, 2: Tarih
+    private var analysisSortAsc: Boolean = false
+    private var showHiddenInAnalysis: Boolean = true
 
     private var drillDownContainer: LinearLayout? = null
     private var drillDownBreadcrumbs: LinearLayout? = null
@@ -84,6 +86,7 @@ class StorageAnalysisActivity : AppCompatActivity() {
 
         currentVolumePath = intent.getStringExtra("TARGET_PATH") ?: LocalFileRepository.rootStorageDir.absolutePath
         currentVolumeTitle = intent.getStringExtra("TARGET_TITLE") ?: "Ana bellek"
+        showHiddenInAnalysis = AppSettings.showHiddenFiles || true
 
         applyThemeColors()
         setupDrillDownOverlay()
@@ -91,8 +94,33 @@ class StorageAnalysisActivity : AppCompatActivity() {
         binding.btnAnalysisBack.setOnClickListener {
             handleBackNavigation()
         }
-        binding.btnAnalysisRefresh.setOnClickListener {
-            runAnalysis()
+
+        binding.btnAnalysisSearch.setOnClickListener {
+            showAnalysisSearchDialog()
+        }
+
+        binding.btnAnalysisSortAndView.setOnClickListener {
+            showOriginalAnalysisSortBottomSheet()
+        }
+
+        binding.btnAnalysisRefresh.setOnClickListener { view ->
+            val popup = PopupMenu(this, view)
+            popup.menu.add(0, 1, 0, "Yeniden Analiz Et")
+            popup.menu.add(0, 2, 1, if (showHiddenInAnalysis) "Gizli Dosyaları Gizle" else "Gizli Dosyaları Göster")
+            popup.setOnMenuItemClickListener { item ->
+                when (item.itemId) {
+                    1 -> runAnalysis()
+                    2 -> {
+                        showHiddenInAnalysis = !showHiddenInAnalysis
+                        AppSettings.showHiddenFiles = showHiddenInAnalysis
+                        if (viewState == 1 && drillDownStack.isNotEmpty()) {
+                            loadDrillDownDirectory(drillDownStack.peek())
+                        }
+                    }
+                }
+                true
+            }
+            popup.show()
         }
 
         runAnalysis()
@@ -101,6 +129,187 @@ class StorageAnalysisActivity : AppCompatActivity() {
     private fun applyThemeColors() {
         ThemeManager.applyWindowColors(this, binding.analysisRoot, binding.analysisToolbar)
         binding.tvAnalysisProgressText.setTextColor(ThemeManager.getPrimaryTextColor(this))
+    }
+
+    /**
+     * Video 03:56 - 04:05'te Kullanıcının Sarı Çemberle Gösterdiği Orijinal Bellek Analizi Alt Paneli:
+     * - Sırala: Boyut ▼
+     * - Diğerleri: Gizli dosyaları göster [✓]
+     * - STATE_EXPANDED olarak tam boyutta açılır, asla aşağıda gömülü kalmaz!
+     */
+    private fun showOriginalAnalysisSortBottomSheet() {
+        val sheet = BottomSheetDialog(this)
+        val density = resources.displayMetrics.density
+        val bgColor = ThemeManager.getCardColor(this)
+        val primaryColor = ThemeManager.getPrimaryTextColor(this)
+        val secondaryColor = ThemeManager.getSecondaryTextColor(this)
+        val dividerColor = ThemeManager.getDividerColor(this)
+        val tealColor = Color.parseColor("#008578")
+        val tintList = ColorStateList(
+            arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
+            intArrayOf(tealColor, secondaryColor)
+        )
+
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(bgColor)
+            setPadding(0, (10 * density).toInt(), 0, (16 * density).toInt())
+        }
+
+        val pH = (20 * density).toInt()
+
+        fun addSectionTitle(title: String) {
+            root.addView(TextView(this).apply {
+                text = title
+                textSize = 13.5f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(tealColor)
+                setPadding(pH, (12 * density).toInt(), pH, (6 * density).toInt())
+            })
+        }
+
+        // 1. Bölüm: Sırala (Boyut ▼)
+        addSectionTitle("Sırala")
+
+        val rowSort = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(pH, (12 * density).toInt(), pH, (12 * density).toInt())
+            setBackgroundResource(android.R.drawable.list_selector_background)
+            isClickable = true
+            isFocusable = true
+        }
+
+        fun getSortLabel(): String {
+            val arrow = if (analysisSortAsc) "▲" else "▼"
+            return when (analysisSortBy) {
+                0 -> "Ad $arrow"
+                2 -> "Tarih $arrow"
+                else -> "Boyut $arrow"
+            }
+        }
+
+        val tvSortCurrent = TextView(this).apply {
+            text = getSortLabel()
+            textSize = 15.5f
+            setTextColor(primaryColor)
+        }
+        rowSort.addView(tvSortCurrent)
+        rowSort.setOnClickListener {
+            val opts = arrayOf("Ad ▲", "Ad ▼", "Boyut ▲", "Boyut ▼", "Tarih ▲", "Tarih ▼")
+            val curIdx = when (analysisSortBy) {
+                0 -> if (analysisSortAsc) 0 else 1
+                2 -> if (analysisSortAsc) 4 else 5
+                else -> if (analysisSortAsc) 2 else 3
+            }
+            AlertDialog.Builder(this)
+                .setTitle("Sıralama ölçütü")
+                .setSingleChoiceItems(opts, curIdx) { d, which ->
+                    when (which) {
+                        0 -> { analysisSortBy = 0; analysisSortAsc = true }
+                        1 -> { analysisSortBy = 0; analysisSortAsc = false }
+                        2 -> { analysisSortBy = 1; analysisSortAsc = true }
+                        3 -> { analysisSortBy = 1; analysisSortAsc = false }
+                        4 -> { analysisSortBy = 2; analysisSortAsc = true }
+                        5 -> { analysisSortBy = 2; analysisSortAsc = false }
+                    }
+                    d.dismiss()
+                    sheet.dismiss()
+                    if (viewState == 1 && drillDownStack.isNotEmpty()) {
+                        loadDrillDownDirectory(drillDownStack.peek())
+                    }
+                }
+                .setNegativeButton("İPTAL", null)
+                .show()
+        }
+        root.addView(rowSort)
+
+        root.addView(View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, (1 * density).toInt())
+            setBackgroundColor(dividerColor)
+        })
+
+        // 2. Bölüm: Diğerleri -> Gizli dosyaları göster [✓]
+        addSectionTitle("Diğerleri")
+
+        val rowHidden = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(pH, (12 * density).toInt(), pH, (12 * density).toInt())
+            setBackgroundResource(android.R.drawable.list_selector_background)
+            isClickable = true
+            isFocusable = true
+        }
+        val tvHidden = TextView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            text = "Gizli dosyaları göster"
+            textSize = 15.5f
+            setTextColor(primaryColor)
+        }
+        val cbHidden = CheckBox(this).apply {
+            isChecked = showHiddenInAnalysis
+            CompoundButtonCompat.setButtonTintList(this, tintList)
+            setOnCheckedChangeListener { _, checked ->
+                showHiddenInAnalysis = checked
+                AppSettings.showHiddenFiles = checked
+                sheet.dismiss()
+                if (viewState == 1 && drillDownStack.isNotEmpty()) {
+                    loadDrillDownDirectory(drillDownStack.peek())
+                }
+            }
+        }
+        rowHidden.setOnClickListener { cbHidden.isChecked = !cbHidden.isChecked }
+        rowHidden.addView(tvHidden)
+        rowHidden.addView(cbHidden)
+        root.addView(rowHidden)
+
+        sheet.setContentView(root)
+        sheet.setOnShowListener {
+            val bottomSheet = sheet.findViewById<View>(com.google.android.material.R.id.design_bottom_sheet)
+            if (bottomSheet != null) {
+                val behavior = BottomSheetBehavior.from(bottomSheet)
+                behavior.skipCollapsed = true
+                behavior.peekHeight = resources.displayMetrics.heightPixels
+                behavior.state = BottomSheetBehavior.STATE_EXPANDED
+            }
+        }
+        sheet.show()
+    }
+
+    private fun showAnalysisSearchDialog() {
+        val rep = currentReport ?: return
+        val et = EditText(this).apply {
+            hint = "Klasör veya büyük dosya ara..."
+            setSingleLine()
+        }
+        val pad = (20 * resources.displayMetrics.density).toInt()
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad, pad, 0)
+            addView(et)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Bellek Analizinde Ara")
+            .setView(box)
+            .setPositiveButton("ARA") { _, _ ->
+                val q = et.text?.toString()?.trim().orEmpty()
+                if (q.isNotEmpty()) {
+                    val matches = (rep.topFolders + rep.largeFiles).filter { it.name.contains(q, ignoreCase = true) }
+                    viewState = 2
+                    binding.tvAnalysisTitle.text = "Arama: \"$q\""
+                    binding.svAnalysisContent.visibility = View.GONE
+                    drillDownContainer?.visibility = View.VISIBLE
+                    val maxSz = (matches.maxOfOrNull { it.size } ?: 1L).coerceAtLeast(1L)
+                    drillDownAdapter?.submitDrillDownList(
+                        newList = matches,
+                        parentTotalBytes = maxSz,
+                        volumeTotalBytes = rep.overview.totalBytes.coerceAtLeast(1L),
+                        showRelativePath = true
+                    )
+                }
+            }
+            .setNegativeButton("İPTAL", null)
+            .show()
     }
 
     private fun setupDrillDownOverlay() {
@@ -116,7 +325,6 @@ class StorageAnalysisActivity : AppCompatActivity() {
             setBackgroundColor(ThemeManager.getBackgroundColor(this@StorageAnalysisActivity))
         }
 
-        // Üst Breadcrumb Barı: [◔ Pie] > [💾 Sürücü] > Download > 1DMP > Compressed
         val pathBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -132,7 +340,7 @@ class StorageAnalysisActivity : AppCompatActivity() {
         val ivPieCrumb = ImageView(this).apply {
             val sz = (24 * density).toInt()
             layoutParams = LinearLayout.LayoutParams(sz, sz)
-            setImageResource(R.drawable.icon_analysis)
+            setImageResource(R.drawable.icon_analysis_s)
             setOnClickListener {
                 showMainCardsState()
             }
@@ -301,10 +509,6 @@ class StorageAnalysisActivity : AppCompatActivity() {
         currentReport?.let { buildOriginalAnalysisCards(it) }
     }
 
-    /**
-     * Video 5'teki (00:09 - 00:23) Orijinal Klasör Boyutu Sıralı Gezgin Ekranını Açar:
-     * Download -> 1DMP -> Compressed -> Alien (Saga)... şeklinde tüm alt klasörlere sıra sıra girer!
-     */
     private fun openFolderDrillDownState(startFolderPath: String) {
         val rep = currentReport ?: return
         viewState = 1
@@ -330,7 +534,13 @@ class StorageAnalysisActivity : AppCompatActivity() {
         renderDrillDownBreadcrumbs(folderPath, rep.rootPath)
 
         lifecycleScope.launch {
-            val items = LocalFileRepository.getFolderSizeDrillDownItems(folderPath, rep)
+            val items = LocalFileRepository.getFolderSizeDrillDownItems(
+                dirPath = folderPath,
+                report = rep,
+                forceShowHidden = showHiddenInAnalysis,
+                sortBy = analysisSortBy,
+                sortAsc = analysisSortAsc
+            )
             val parentTotal = (rep.folderSizeMap[folderPath] ?: items.sumOf { it.size }).coerceAtLeast(1L)
             val storageTotal = rep.overview.totalBytes.coerceAtLeast(1L)
             drillDownAdapter?.submitDrillDownList(
@@ -342,9 +552,6 @@ class StorageAnalysisActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Video 5'teki (00:30 - 00:33) Orijinal "Büyük dosyalar" Tam Liste Ekranı
-     */
     private fun openLargeFilesListScreen(report: StorageAnalysisReport) {
         viewState = 2
         drillDownStack.clear()
@@ -408,11 +615,6 @@ class StorageAnalysisActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Video 5'teki (00:04 - 00:08 ve 00:28 - 00:36) Orijinal Bellek Analizi Kartlarını Birebir Oluşturur:
-     * - card_analysis_type_size.xml
-     * - card_files.xml (Uygulamalar, Büyük dosyalar, Ön bellek dosyaları, Yinelenen dosyalar)
-     */
     private fun buildOriginalAnalysisCards(report: StorageAnalysisReport) {
         val contentRoot = binding.svAnalysisContent.getChildAt(0) as? LinearLayout ?: return
         contentRoot.removeAllViews()
@@ -424,7 +626,6 @@ class StorageAnalysisActivity : AppCompatActivity() {
         val dividerColor = ThemeManager.getDividerColor(this)
         val tealAccent = Color.parseColor("#008578")
 
-        // Varsa Ana bellek / SD kart sekme çubuğu
         val removables = LocalFileRepository.getRemovableStorageVolumes(this)
         if (removables.isNotEmpty()) {
             val tabBar = LinearLayout(this).apply {
@@ -562,7 +763,7 @@ class StorageAnalysisActivity : AppCompatActivity() {
             card.addView(btnRow)
         }
 
-        // ==================== KART 1: Ana bellek Boş XX GB (card_analysis_type_size.xml) ====================
+        // ==================== KART 1: Ana bellek ====================
         val card1 = createCardShell()
         addCardTitleRow(card1, report.rootTitle, "Boş ${FormatUtils.formatSizeDetailed(report.overview.freeBytes)}")
 
@@ -589,7 +790,6 @@ class StorageAnalysisActivity : AppCompatActivity() {
         }
         card1.addView(pbMain)
 
-        // 2 sütun x 3 satır Kategori Özeti: Görüntüler | Ses / Videolar | Belgeler / Arşivler | Diğerleri
         val catRowsData = listOf(
             Triple("Görüntüler", R.drawable.v_shape_image, report.imagesBytes) to Triple("Ses", R.drawable.ic_cat_audio, report.audioBytes),
             Triple("Videolar", R.drawable.v_shape_video, report.videosBytes) to Triple("Belgeler", R.drawable.ic_cat_docs, report.docsBytes),
@@ -654,13 +854,12 @@ class StorageAnalysisActivity : AppCompatActivity() {
             card1.addView(row)
         }
 
-        // DAHA FAZLA -> Video 5 (00:08-00:23) Klasörlerin İçi Boyut Sıralı Gezgin Ekranını Açar!
         addCardBottomButtons(card1, rightBtnText = "DAHA FAZLA") {
             openFolderDrillDownState(report.rootPath)
         }
         contentRoot.addView(card1)
 
-        // ==================== KART 2: Uygulamalar (card_files.xml) ====================
+        // ==================== KART 2: Uygulamalar ====================
         if (report.installedApps.isNotEmpty()) {
             val cardApps = createCardShell()
             addCardTitleRow(cardApps, "Uygulamalar", FormatUtils.formatSizeDetailed(report.appsBytes))
@@ -707,7 +906,7 @@ class StorageAnalysisActivity : AppCompatActivity() {
             contentRoot.addView(cardApps)
         }
 
-        // ==================== KART 3: Büyük dosyalar (10 MB'den büyük dosyalar) ====================
+        // ==================== KART 3: Büyük dosyalar ====================
         val cardLarge = createCardShell()
         val largeTotal = report.largeFiles.sumOf { it.size }
         addCardTitleRow(
@@ -964,11 +1163,6 @@ class StorageAnalysisActivity : AppCompatActivity() {
         handleBackNavigation()
     }
 
-    /**
-     * Video 5'teki (00:09 - 00:23) Orijinal Klasör/Dosya Boyut Çubuğu Çizicisi (clip_storage_total & clip_current_folder):
-     * - Yeşil çubuk (#AED581 açık temada / #33691E koyu temada): Bulunduğu klasör içindeki oranı
-     * - Mavi çubuk (#4FC3F7 açık temada / #0277BD koyu temada): Toplam depolama içindeki oranı
-     */
     private class ProportionalSizeBarDrawable(
         private val folderRatio: Float,
         private val totalStorageRatio: Float,
@@ -1005,9 +1199,6 @@ class StorageAnalysisActivity : AppCompatActivity() {
         override fun getOpacity(): Int = android.graphics.PixelFormat.TRANSLUCENT
     }
 
-    /**
-     * Video 5'teki (00:09 - 00:23 & 00:30 - 00:33) Klasör İçi Boyut Gezgini ve Büyük Dosyalar Adapter'ı
-     */
     private inner class DrillDownSizeAdapter(
         private val onItemClick: (FileItem) -> Unit,
         private val onItemLongClick: (FileItem) -> Unit,
@@ -1149,7 +1340,6 @@ class StorageAnalysisActivity : AppCompatActivity() {
             holder.tvName.setTextColor(primaryColor)
 
             if (showRelativePath) {
-                // Büyük dosyalar ekranı (Video 5 00:30-00:33): "3,21 GB  /sa" + sağda tarih ve onay kutusu
                 val relFolder = if (item.parentId.isNotBlank()) "/${item.parentId}/" else "/"
                 holder.tvSub.text = "${FormatUtils.formatSizeDetailed(item.size)}   $relFolder"
                 holder.tvSub.setTextColor(secondaryColor)
@@ -1157,7 +1347,6 @@ class StorageAnalysisActivity : AppCompatActivity() {
                 holder.tvRight.setTextColor(secondaryColor)
                 holder.barBox.background = null
             } else {
-                // Klasör Boyutu Gezgini (Video 5 00:09-00:23): "105 öğe (13,61 GB)" + Yeşil/Mavi Çubuk + Sağda "12,07%"
                 val sizeStr = FormatUtils.formatSizeDetailed(item.size)
                 holder.tvSub.text = if (item.isDirectory) {
                     "${item.childCount} öğe ($sizeStr)"

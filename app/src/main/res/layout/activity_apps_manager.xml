@@ -5,49 +5,75 @@
     android:layout_height="match_parent"
     android:orientation="vertical">
 
+    <!-- Üst Araç Çubuğu (Orijinal APK Video 03:03 - 03:06):
+         Normal mod: ← Uygulamalar ... 🔍 ⇵
+         Seçim modu: ✕ 1 / 65 ... ☑ ⋮ -->
     <LinearLayout
         android:id="@+id/appsToolbar"
         android:layout_width="match_parent"
         android:layout_height="56dp"
         android:background="@color/toolbar_dark"
+        android:elevation="4dp"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:paddingStart="6dp"
-        android:paddingEnd="8dp"
-        android:elevation="4dp">
+        android:paddingStart="4dp"
+        android:paddingEnd="4dp">
 
         <ImageButton
             android:id="@+id/btnAppsBack"
-            android:layout_width="42dp"
-            android:layout_height="42dp"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
             android:background="?attr/selectableItemBackgroundBorderless"
-            android:src="@drawable/ic_arrow_back" />
+            android:padding="10dp"
+            android:src="@drawable/ic_back_white" />
 
         <TextView
+            android:id="@+id/tvAppsTitle"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_marginStart="10dp"
+            android:layout_marginStart="8dp"
             android:layout_weight="1"
+            android:singleLine="true"
             android:text="@string/apps"
             android:textColor="#FFFFFF"
-            android:textSize="18sp"
+            android:textSize="19sp"
             android:textStyle="bold" />
 
         <EditText
             android:id="@+id/etAppsSearch"
-            android:layout_width="180dp"
-            android:layout_height="36dp"
+            android:layout_width="0dp"
+            android:layout_height="38dp"
+            android:layout_weight="1.2"
             android:background="@drawable/bg_search_box"
             android:hint="Uygulama ara..."
-            android:paddingStart="10dp"
-            android:paddingEnd="10dp"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
             android:singleLine="true"
             android:textColor="#FFFFFF"
-            android:textColorHint="#9E9E9E"
-            android:textSize="13sp" />
+            android:textColorHint="#B0BEC5"
+            android:textSize="14sp"
+            android:visibility="gone" />
+
+        <ImageButton
+            android:id="@+id/btnAppsSearch"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Ara"
+            android:padding="10dp"
+            android:src="@drawable/ic_search_white" />
+
+        <ImageButton
+            android:id="@+id/btnAppsSort"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Sırala"
+            android:padding="10dp"
+            android:src="@drawable/ic_ab_view_settings" />
     </LinearLayout>
 
-    <!-- İNDİRİLENLER / TÜMÜ Sekmeleri (00:23) -->
+    <!-- İNDİRİLENLER / TÜMÜ Sekmeleri (Video 03:03) -->
     <LinearLayout
         android:id="@+id/appsTabRow"
         android:layout_width="match_parent"
@@ -57,7 +83,7 @@
 
         <TextView
             android:id="@+id/tabDownloadedApps"
-            android:layout_width="140dp"
+            android:layout_width="150dp"
             android:layout_height="match_parent"
             android:gravity="center"
             android:text="İNDİRİLENLER"
@@ -67,7 +93,7 @@
 
         <TextView
             android:id="@+id/tabAllApps"
-            android:layout_width="140dp"
+            android:layout_width="150dp"
             android:layout_height="match_parent"
             android:gravity="center"
             android:text="TÜMÜ"
@@ -83,7 +109,8 @@
 
     <FrameLayout
         android:layout_width="match_parent"
-        android:layout_height="match_parent">
+        android:layout_height="0dp"
+        android:layout_weight="1">
 
         <androidx.recyclerview.widget.RecyclerView
             android:id="@+id/rvApps"
@@ -99,4 +126,146 @@
             android:indeterminateTint="@color/accent_teal"
             android:visibility="gone" />
     </FrameLayout>
+
+    <!-- Uzun Basınca Açılan 5'li Alt İşlem Çubuğu (Video 03:04 - 03:06):
+         [Yedekle] | [Kaldır] | [Paylaş] | [Aç] | [Mağaza] -->
+    <LinearLayout
+        android:id="@+id/llAppsBottomActionBar"
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:background="#212121"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:id="@+id/btnAppBottomBackup"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:background="?attr/selectableItemBackground"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:orientation="vertical">
+
+            <ImageView
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:src="@drawable/ic_content_copy"
+                android:tint="#FFFFFF" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="Yedekle"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/btnAppBottomUninstall"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:background="?attr/selectableItemBackground"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:orientation="vertical">
+
+            <ImageView
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:src="@drawable/ic_delete"
+                android:tint="#FFFFFF" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="Kaldır"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/btnAppBottomShare"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:background="?attr/selectableItemBackground"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:orientation="vertical">
+
+            <ImageView
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:src="@drawable/ic_menu_share"
+                android:tint="#FFFFFF" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="Paylaş"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/btnAppBottomOpen"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:background="?attr/selectableItemBackground"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:orientation="vertical">
+
+            <ImageView
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:src="@drawable/ic_vp_play"
+                android:tint="#FFFFFF" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="Aç"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/btnAppBottomStore"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:background="?attr/selectableItemBackground"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:orientation="vertical">
+
+            <ImageView
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:src="@drawable/ic_star_bookmark"
+                android:tint="#FFFFFF" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="Mağaza"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp" />
+        </LinearLayout>
+    </LinearLayout>
 </LinearLayout>

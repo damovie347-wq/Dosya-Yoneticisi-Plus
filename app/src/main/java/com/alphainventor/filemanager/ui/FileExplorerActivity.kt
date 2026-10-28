@@ -54,6 +54,7 @@ import com.alphainventor.filemanager.viewer.MusicPlayerActivity
 import com.alphainventor.filemanager.viewer.TextEditorActivity
 import com.alphainventor.filemanager.viewer.VideoPlayerActivity
 import com.google.android.material.bottomsheet.BottomSheetDialog
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import java.io.File
 import java.util.Stack
@@ -78,6 +79,7 @@ class FileExplorerActivity : AppCompatActivity() {
     private var selectedBucketPath: String = ""
     private var selectedBucketName: String = ""
     private var cloudAccount: CloudAccount? = null
+    private var loadDirectoryJob: Job? = null
     private var remoteAccount: RemoteAccount? = null
 
     private data class CloudCrumb(val id: String, val name: String)
@@ -193,10 +195,7 @@ class FileExplorerActivity : AppCompatActivity() {
                 }
                 binding.tvStorageBadge.visibility = View.GONE
                 binding.btnParentFolderUp.visibility = View.VISIBLE
-                if (categoryName in setOf("VIDEOS", "IMAGES", "AUDIO", "DOCUMENTS")) {
-                    adapter.isGridMode = true
-                    updateRecyclerLayoutManager()
-                }
+                applySavedViewModeForCurrentLocation()
             }
             else -> {
                 val title = intent.getStringExtra("TITLE") ?: "Ana bellek"
@@ -229,7 +228,31 @@ class FileExplorerActivity : AppCompatActivity() {
             }
         }
 
+        applySavedViewModeForCurrentLocation()
         loadCurrentDirectory(forceRefresh = false)
+    }
+
+    private fun currentLocationPreferenceKey(): String {
+        return when (mode) {
+            "CATEGORY" -> if (selectedBucketPath.isEmpty()) "CATEGORY:$categoryName" else "CATEGORY_BUCKET:$categoryName:$selectedBucketPath"
+            "CLOUD" -> "CLOUD:${cloudAccount?.id}:${if (cloudNavStack.isEmpty()) "root" else cloudNavStack.peek().id}"
+            "REMOTE" -> "REMOTE:${remoteAccount?.id}:$currentPath"
+            else -> "LOCAL:$currentPath"
+        }
+    }
+
+    private fun applySavedViewModeForCurrentLocation() {
+        val defaultViewMode = if (mode == "CATEGORY" && categoryName in setOf("VIDEOS", "IMAGES", "AUDIO", "DOCUMENTS")) 1 else AppSettings.viewTypeMode
+        val locKey = currentLocationPreferenceKey()
+        val savedViewMode = AppSettings.getViewTypeForLocation(locKey, defaultViewMode)
+        val savedIconSize = AppSettings.getIconSizeForLocation(locKey)
+        AppSettings.iconSizeMode = savedIconSize
+        val (savedSortBy, savedSortAsc) = AppSettings.getSortForLocation(locKey)
+        AppSettings.sortBy = savedSortBy
+        AppSettings.sortAscending = savedSortAsc
+        adapter.isGridMode = (savedViewMode == 1)
+        adapter.isCompactListMode = (savedViewMode == 2)
+        updateRecyclerLayoutManager()
     }
 
     private fun updateLocalStorageUsedPill() {
@@ -242,7 +265,12 @@ class FileExplorerActivity : AppCompatActivity() {
         val vPad = (4 * density).toInt()
         binding.tvStorageBadge.setPadding(hPad, vPad, hPad, vPad)
         binding.tvStorageBadge.setTextColor(ThemeManager.getPrimaryTextColor(this))
-        binding.tvStorageBadge.text = "◔ KULLANILAN ${overview.usedPercent}%"
+        val pieDr = ContextCompat.getDrawable(this, R.drawable.icon_analysis_s)?.mutate()
+        val pieSz = (18 * density).toInt()
+        pieDr?.setBounds(0, 0, pieSz, pieSz)
+        binding.tvStorageBadge.setCompoundDrawables(pieDr, null, null, null)
+        binding.tvStorageBadge.compoundDrawablePadding = (6 * density).toInt()
+        binding.tvStorageBadge.text = "KULLANILAN ${overview.usedPercent}%"
         binding.tvStorageBadge.setOnClickListener {
             startActivity(Intent(this, StorageAnalysisActivity::class.java).apply {
                 putExtra("TARGET_PATH", rootPath)
@@ -253,6 +281,7 @@ class FileExplorerActivity : AppCompatActivity() {
 
     private fun updateCloudQuotaLabel(acc: CloudAccount) {
         binding.tvStorageBadge.background = null
+        binding.tvStorageBadge.setCompoundDrawables(null, null, null, null)
         binding.tvStorageBadge.setOnClickListener(null)
         binding.tvStorageBadge.setTextColor(ThemeManager.getSecondaryTextColor(this))
         if (acc.usedQuotaBytes > 0L || acc.totalQuotaBytes > 0L) {
@@ -571,24 +600,17 @@ class FileExplorerActivity : AppCompatActivity() {
         rgViewType.addView(rbDetail)
 
         rgViewType.setOnCheckedChangeListener { _, checkedId ->
-            when (checkedId) {
-                1001 -> {
-                    AppSettings.viewTypeMode = 0
-                    adapter.isCompactListMode = false
-                    adapter.isGridMode = false
-                }
-                1002 -> {
-                    AppSettings.viewTypeMode = 1
-                    adapter.isCompactListMode = false
-                    adapter.isGridMode = true
-                }
-                1003 -> {
-                    AppSettings.viewTypeMode = 2
-                    adapter.isGridMode = false
-                    adapter.isCompactListMode = true
-                }
+            val newMode = when (checkedId) {
+                1001 -> 0
+                1002 -> 1
+                1003 -> 2
+                else -> 0
             }
+            AppSettings.setViewTypeForLocation(currentLocationPreferenceKey(), newMode, cbApplyAll.isChecked)
+            adapter.isGridMode = (newMode == 1)
+            adapter.isCompactListMode = (newMode == 2)
             updateRecyclerLayoutManager()
+            adapter.notifyDataSetChanged()
             sheet.dismiss()
         }
         root.addView(rgViewType)
@@ -611,7 +633,8 @@ class FileExplorerActivity : AppCompatActivity() {
         rgIconSize.addView(spacerView)
 
         rgIconSize.setOnCheckedChangeListener { _, checkedId ->
-            AppSettings.iconSizeMode = if (checkedId == 2002) 1 else 0
+            val newSize = if (checkedId == 2002) 1 else 0
+            AppSettings.setIconSizeForLocation(currentLocationPreferenceKey(), newSize, cbApplyAll.isChecked)
             updateRecyclerLayoutManager()
             adapter.notifyDataSetChanged()
             sheet.dismiss()
@@ -719,6 +742,15 @@ class FileExplorerActivity : AppCompatActivity() {
         }
 
         sheet.setContentView(scroll)
+        sheet.setOnShowListener {
+            val bottomSheet = sheet.findViewById<View>(com.google.android.material.R.id.design_bottom_sheet)
+            if (bottomSheet != null) {
+                val behavior = com.google.android.material.bottomsheet.BottomSheetBehavior.from(bottomSheet)
+                behavior.skipCollapsed = true
+                behavior.peekHeight = resources.displayMetrics.heightPixels
+                behavior.state = com.google.android.material.bottomsheet.BottomSheetBehavior.STATE_EXPANDED
+            }
+        }
         sheet.show()
     }
 
@@ -773,8 +805,7 @@ class FileExplorerActivity : AppCompatActivity() {
             .setTitle("Sıralama ölçütü")
             .setSingleChoiceItems(labels, currentIdx) { dialog, which ->
                 val chosen = options[which]
-                AppSettings.sortBy = chosen.sortBy
-                AppSettings.sortAscending = chosen.asc
+                AppSettings.setSortForLocation(currentLocationPreferenceKey(), chosen.sortBy, chosen.asc, AppSettings.applyViewToAllFolders)
                 dialog.dismiss()
                 onSortSelected()
             }
@@ -811,38 +842,37 @@ class FileExplorerActivity : AppCompatActivity() {
     }
 
     private fun loadCurrentDirectory(forceRefresh: Boolean = false) {
+        loadDirectoryJob?.cancel()
+        applySavedViewModeForCurrentLocation()
         binding.pbLoadingFiles.visibility = View.VISIBLE
         binding.llEmptyFolder.visibility = View.GONE
         renderBreadcrumbs()
 
-        lifecycleScope.launch {
+        loadDirectoryJob = lifecycleScope.launch {
             val list = when (mode) {
                 "CLOUD" -> {
                     val acc = cloudAccount ?: return@launch
-                    val currentFolderId = if (cloudNavStack.isEmpty()) "root" else cloudNavStack.peek().id
-                    val files = CloudManager.listCloudFolder(this@FileExplorerActivity, acc, currentFolderId, forceRefresh)
+                    val expectedFolderId = if (cloudNavStack.isEmpty()) "root" else cloudNavStack.peek().id
+                    val files = CloudManager.listCloudFolder(this@FileExplorerActivity, acc, expectedFolderId, forceRefresh)
+                    val activeFolderIdNow = if (cloudNavStack.isEmpty()) "root" else cloudNavStack.peek().id
+                    if (activeFolderIdNow != expectedFolderId) return@launch
+
                     val recovery = CloudManager.pendingRecoveryIntent
                     if (recovery != null) {
                         binding.pbLoadingFiles.visibility = View.GONE
                         driveConsentLauncher.launch(recovery)
                         return@launch
                     }
-                    if (files.isEmpty() && CloudManager.needsWebOAuthFallbackForAccount != null) {
-                        binding.pbLoadingFiles.visibility = View.GONE
-                        startActivity(Intent(this@FileExplorerActivity, CloudAccountsActivity::class.java).apply {
-                            putExtra("AUTO_AUTH_ACCOUNT_ID", acc.id)
-                        })
-                        finish()
-                        return@launch
-                    }
                     val refreshedAcc = CloudManager.getAccounts(this@FileExplorerActivity).firstOrNull { it.id == acc.id }
                     if (refreshedAcc != null) {
                         cloudAccount = refreshedAcc
                     }
-                    launch {
-                        val updatedAcc = CloudManager.fetchGoogleDriveQuota(this@FileExplorerActivity, cloudAccount ?: acc)
-                        cloudAccount = updatedAcc
-                        updateCloudQuotaLabel(updatedAcc)
+                    if (expectedFolderId == "root" && files.isNotEmpty()) {
+                        launch {
+                            val updatedAcc = CloudManager.fetchGoogleDriveQuota(this@FileExplorerActivity, cloudAccount ?: acc)
+                            cloudAccount = updatedAcc
+                            updateCloudQuotaLabel(updatedAcc)
+                        }
                     }
                     files
                 }

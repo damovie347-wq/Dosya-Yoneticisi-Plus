@@ -31,6 +31,82 @@ object AppSettings {
         get() = prefs(FileManagerApp.instance).getBoolean("apply_view_to_all", false)
         set(v) = prefs(FileManagerApp.instance).edit().putBoolean("apply_view_to_all", v).apply()
 
+    fun getViewTypeForLocation(locationKey: String, defaultViewType: Int): Int {
+        val p = prefs(FileManagerApp.instance)
+        val locKey = "loc_view_type_$locationKey"
+        if (p.contains(locKey)) {
+            return p.getInt(locKey, defaultViewType)
+        }
+        if (applyViewToAllFolders && p.contains("view_type_mode")) {
+            return p.getInt("view_type_mode", defaultViewType)
+        }
+        return defaultViewType
+    }
+
+    fun setViewTypeForLocation(locationKey: String, mode: Int, applyToAll: Boolean) {
+        val p = prefs(FileManagerApp.instance)
+        val editor = p.edit()
+        editor.putInt("loc_view_type_$locationKey", mode)
+        if (applyToAll) {
+            editor.putInt("view_type_mode", mode)
+            for (k in p.all.keys) {
+                if (k.startsWith("loc_view_type_") && k != "loc_view_type_$locationKey") {
+                    editor.putInt(k, mode)
+                }
+            }
+        }
+        editor.apply()
+    }
+
+    fun getIconSizeForLocation(locationKey: String): Int {
+        val p = prefs(FileManagerApp.instance)
+        val locKey = "loc_icon_size_$locationKey"
+        if (p.contains(locKey)) {
+            return p.getInt(locKey, iconSizeMode)
+        }
+        return iconSizeMode
+    }
+
+    fun setIconSizeForLocation(locationKey: String, sizeMode: Int, applyToAll: Boolean) {
+        val p = prefs(FileManagerApp.instance)
+        val editor = p.edit()
+        editor.putInt("loc_icon_size_$locationKey", sizeMode)
+        editor.putInt("icon_size_mode", sizeMode)
+        if (applyToAll) {
+            for (k in p.all.keys) {
+                if (k.startsWith("loc_icon_size_")) {
+                    editor.putInt(k, sizeMode)
+                }
+            }
+        }
+        editor.apply()
+    }
+
+    fun getSortForLocation(locationKey: String): Pair<Int, Boolean> {
+        val p = prefs(FileManagerApp.instance)
+        val sKey = "loc_sort_by_$locationKey"
+        val aKey = "loc_sort_asc_$locationKey"
+        val sb = if (p.contains(sKey)) p.getInt(sKey, sortBy) else sortBy
+        val sa = if (p.contains(aKey)) p.getBoolean(aKey, sortAscending) else sortAscending
+        return Pair(sb, sa)
+    }
+
+    fun setSortForLocation(locationKey: String, newSortBy: Int, newSortAsc: Boolean, applyToAll: Boolean) {
+        val p = prefs(FileManagerApp.instance)
+        val editor = p.edit()
+        editor.putInt("loc_sort_by_$locationKey", newSortBy)
+        editor.putBoolean("loc_sort_asc_$locationKey", newSortAsc)
+        editor.putInt("sort_by", newSortBy)
+        editor.putBoolean("sort_ascending", newSortAsc)
+        if (applyToAll) {
+            for (k in p.all.keys) {
+                if (k.startsWith("loc_sort_by_")) editor.putInt(k, newSortBy)
+                if (k.startsWith("loc_sort_asc_")) editor.putBoolean(k, newSortAsc)
+            }
+        }
+        editor.apply()
+    }
+
     var showThumbnails: Boolean
         get() = prefs(FileManagerApp.instance).getBoolean("show_thumbnails", true)
         set(v) = prefs(FileManagerApp.instance).edit().putBoolean("show_thumbnails", v).apply()

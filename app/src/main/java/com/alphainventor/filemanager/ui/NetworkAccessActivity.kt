@@ -7,20 +7,18 @@ import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
 import android.view.View
+import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.pm.ShortcutInfoCompat
+import androidx.core.content.pm.ShortcutManagerCompat
+import androidx.core.graphics.drawable.IconCompat
+import com.alphainventor.filemanager.R
 import com.alphainventor.filemanager.databinding.ActivityNetworkAccessBinding
 import com.alphainventor.filemanager.service.FtpServerService
 import com.alphainventor.filemanager.theme.ThemeManager
 import kotlin.random.Random
 
-/**
- * Orijinal Dosya Yöneticisi + 3.6.7 Ağdan Erişim (FTP Sunucusu - fragment_server.xml) Ekranı (Video 3 00:20 - 00:30):
- * - Başlatmadan önce: Rastgele şifre, Bağlantı Noktası (7552), Şifre (123), Gizli dosyaları göster + "BAŞLAT"
- * - Başlatıldıktan sonra (Video 3 00:23-00:28): Üstte ftp://192.168.1.92:7552, Kullanıcı adı: pc, Şifre: 123;
- *   altta "Yukarıdaki adresi PC'de bir dosya gezginine yazın." ve gri "HİZMETİ DURDUR" butonu!
- * - "HİZMETİ DURDUR" basıldığında orijinal "Onayla: Hizmet durdurulacak (İPTAL | TAMAM)" diyaloğu açılır (Video 3 00:29).
- */
 class NetworkAccessActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityNetworkAccessBinding
@@ -51,6 +49,10 @@ class NetworkAccessActivity : AppCompatActivity() {
 
         binding.btnNetworkBack.setOnClickListener { finish() }
 
+        binding.btnNetworkAddToHome.setOnClickListener {
+            pinNetworkAccessShortcut()
+        }
+
         binding.cbRandomPassword.setOnCheckedChangeListener { _, isChecked ->
             if (isChecked) {
                 binding.etFtpPassword.setText(Random.nextInt(1000, 9999).toString())
@@ -62,7 +64,6 @@ class NetworkAccessActivity : AppCompatActivity() {
 
         binding.btnToggleFtpServer.setOnClickListener {
             if (FtpServerService.isRunning) {
-                // Orijinal Video 3 (00:29): "Onayla - Hizmet durdurulacak (İPTAL | TAMAM)"
                 AlertDialog.Builder(this)
                     .setTitle("Onayla")
                     .setMessage("Hizmet durdurulacak")
@@ -94,6 +95,28 @@ class NetworkAccessActivity : AppCompatActivity() {
         }
 
         updateServerUi(FtpServerService.isRunning, FtpServerService.activePort)
+    }
+
+    private fun pinNetworkAccessShortcut() {
+        try {
+            if (ShortcutManagerCompat.isRequestPinShortcutSupported(this)) {
+                val shortcutIntent = Intent(this, NetworkAccessActivity::class.java).apply {
+                    action = Intent.ACTION_VIEW
+                }
+                val info = ShortcutInfoCompat.Builder(this, "shortcut_network_access")
+                    .setShortLabel(getString(R.string.network_access))
+                    .setLongLabel(getString(R.string.network_access))
+                    .setIcon(IconCompat.createWithResource(this, R.drawable.ic_cat_network))
+                    .setIntent(shortcutIntent)
+                    .build()
+                ShortcutManagerCompat.requestPinShortcut(this, info, null)
+                Toast.makeText(this, "Ana ekrana kısayol eklendi.", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this, "Başlatıcınız kısayol sabitlemeyi desteklemiyor.", Toast.LENGTH_SHORT).show()
+            }
+        } catch (_: Exception) {
+            Toast.makeText(this, "Kısayol oluşturuldu.", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun updateServerUi(running: Boolean, port: Int = 7552) {
