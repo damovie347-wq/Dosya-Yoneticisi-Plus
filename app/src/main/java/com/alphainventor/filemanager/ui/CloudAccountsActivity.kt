@@ -450,6 +450,7 @@ class CloudAccountsActivity : AppCompatActivity() {
 
     private fun setupAccountsList() {
         accountsAdapter = CloudAccountsAdapter(
+            accounts = emptyList(),
             onAccountClick = { account ->
                 if (accountsAdapter.isEditMode) {
                     showAccountOptionsDialog(account)
@@ -525,19 +526,16 @@ class CloudAccountsActivity : AppCompatActivity() {
 
         binding.etUnifiedCloudSearch.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                binding.btnClearCloudSearch.visibility = if (s.isNullOrEmpty()) View.GONE else View.VISIBLE
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                if (searchUiState == 1) {
+                    renderSearchHistoryRows()
+                }
             }
-            override fun afterTextChanged(s: Editable?) {}
         })
 
-        binding.btnClearCloudSearch.setOnClickListener {
+        binding.btnClearUnifiedSearch.setOnClickListener {
             binding.etUnifiedCloudSearch.setText("")
-            unifiedSearchJob?.cancel()
-            unifiedResultsAdapter.highlightQuery = ""
-            binding.llUnifiedSearchStatus.visibility = View.GONE
-            binding.llUnifiedSearchResultsSection.visibility = View.GONE
-            renderSearchHistoryRows()
         }
 
         binding.btnCloseSearchResults.setOnClickListener {
@@ -546,23 +544,28 @@ class CloudAccountsActivity : AppCompatActivity() {
 
         binding.chipFilterAll.setOnClickListener { updateSearchFilter(CloudSearchFilter.ALL) }
         binding.chipFilterVideos.setOnClickListener { updateSearchFilter(CloudSearchFilter.VIDEOS) }
-        binding.chipFilterAudio.setOnClickListener { updateSearchFilter(CloudSearchFilter.AUDIO) }
-        binding.chipFilterImages.setOnClickListener { updateSearchFilter(CloudSearchFilter.IMAGES) }
         binding.chipFilterDocs.setOnClickListener { updateSearchFilter(CloudSearchFilter.DOCUMENTS) }
+        binding.chipFilterArchives.setOnClickListener { updateSearchFilter(CloudSearchFilter.ARCHIVES) }
     }
 
-    private fun updateSearchFilter(filter: CloudSearchFilter) {
-        activeFilter = filter
-        val activeBg = Color.parseColor("#FF9800")
-        val inactiveBg = Color.parseColor("#2A2F3A")
-
-        binding.chipFilterAll.setBackgroundColor(if (filter == CloudSearchFilter.ALL) activeBg else inactiveBg)
-        binding.chipFilterVideos.setBackgroundColor(if (filter == CloudSearchFilter.VIDEOS) activeBg else inactiveBg)
-        binding.chipFilterAudio.setBackgroundColor(if (filter == CloudSearchFilter.AUDIO) activeBg else inactiveBg)
-        binding.chipFilterImages.setBackgroundColor(if (filter == CloudSearchFilter.IMAGES) activeBg else inactiveBg)
-        binding.chipFilterDocs.setBackgroundColor(if (filter == CloudSearchFilter.DOCUMENTS) activeBg else inactiveBg)
-
-        if (binding.etUnifiedCloudSearch.text?.isNotBlank() == true) {
+    private fun updateSearchFilter(newFilter: CloudSearchFilter) {
+        activeFilter = newFilter
+        val chips = mapOf(
+            CloudSearchFilter.ALL to binding.chipFilterAll,
+            CloudSearchFilter.VIDEOS to binding.chipFilterVideos,
+            CloudSearchFilter.DOCUMENTS to binding.chipFilterDocs,
+            CloudSearchFilter.ARCHIVES to binding.chipFilterArchives
+        )
+        chips.forEach { (flt, view) ->
+            if (flt == activeFilter) {
+                view.setBackgroundResource(R.drawable.bg_badge_pill)
+                view.setTextColor(Color.WHITE)
+            } else {
+                view.setBackgroundResource(R.drawable.bg_search_box)
+                view.setTextColor(Color.parseColor("#555555"))
+            }
+        }
+        if (binding.etUnifiedCloudSearch.text?.isNotBlank() == true || searchUiState == 2) {
             executeUnifiedMultiCloudSearch()
         }
     }
@@ -571,21 +574,16 @@ class CloudAccountsActivity : AppCompatActivity() {
         val query = binding.etUnifiedCloudSearch.text?.toString()?.trim().orEmpty()
         val accounts = CloudManager.getAccounts(this)
         if (accounts.isEmpty()) {
-            Toast.makeText(this, "Önce '+ Bir bulut konumu ekle' ile bulut hesabınızı ekleyin.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Önce '+ Bir bulut konumu ekle' ile Google Drive veya bulut hesabı ekleyin.", Toast.LENGTH_SHORT).show()
             return
         }
-        if (query.isEmpty()) {
-            Toast.makeText(this, "Aramak istediğiniz dosya veya video adını yazın.", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        switchToBlueResultsState(query)
-        unifiedResultsAdapter.highlightQuery = query
 
         unifiedSearchJob?.cancel()
-        binding.llUnifiedSearchStatus.visibility = View.VISIBLE
-        binding.pbUnifiedSearch.visibility = View.VISIBLE
-        binding.tvUnifiedSearchProgress.text = "${accounts.size} bulut hesabında \"$query\" aranıyor..."
+        unifiedResultsAdapter.highlightQuery = query
+        switchToBlueResultsState(query)
+
+        binding.tvSearchResultsHeader.text = "\"$query\"  (Taranıyor...)"
+        unifiedResultsAdapter.submitList(emptyList())
 
         unifiedSearchJob = lifecycleScope.launch {
             val results = CloudManager.searchAcrossAllAccounts(
@@ -594,34 +592,19 @@ class CloudAccountsActivity : AppCompatActivity() {
                 filter = activeFilter,
                 onProgress = { progress ->
                     runOnUiThread {
-                        binding.tvUnifiedSearchProgress.text =
-                            "Taranıyor (${progress.completedAccounts}/${progress.totalAccounts}): ${progress.currentAccountName}"
+                        unifiedResultsAdapter.highlightQuery = query
+                        binding.tvSearchResultsHeader.text =
+                            "\"$query\"  (${progress.completedAccounts}/${progress.totalAccounts} hesap • ${progress.partialResults.size} sonuç)"
                         unifiedResultsAdapter.submitList(progress.partialResults)
                     }
                 }
             )
-            binding.pbUnifiedSearch.visibility = View.GONE
-            binding.llUnifiedSearchStatus.visibility = View.GONE
+
+            unifiedResultsAdapter.highlightQuery = query
             binding.tvSearchResultsHeader.text = "\"$query\""
             unifiedResultsAdapter.submitList(results)
-
             if (results.isEmpty()) {
-                val unauthorizedGoogle = accounts.firstOrNull {
-                    it.provider == CloudProviderType.GOOGLE_DRIVE && it.accessToken.isBlank() && it.refreshToken.isBlank()
-                }
-                if (unauthorizedGoogle != null) {
-                    Toast.makeText(
-                        this@CloudAccountsActivity,
-                        "${unauthorizedGoogle.emailOrName} için Google Drive izni gerekiyor.",
-                        Toast.LENGTH_LONG
-                    ).show()
-                } else {
-                    Toast.makeText(
-                        this@CloudAccountsActivity,
-                        "\"$query\" için eşleşen dosya bulunamadı.",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
+                Toast.makeText(this@CloudAccountsActivity, "\"$query\" için eşleşen dosya bulunamadı.", Toast.LENGTH_SHORT).show()
             }
         }
     }
