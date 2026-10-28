@@ -41,6 +41,14 @@
                 android:scaleType="centerCrop"
                 android:src="@drawable/ic_folder_modern" />
 
+            <ImageView
+                android:id="@+id/ivPlayOverlay"
+                android:layout_width="18dp"
+                android:layout_height="18dp"
+                android:layout_gravity="center"
+                android:src="@drawable/ic_gallery_play"
+                android:visibility="gone" />
+
             <!-- Protokol veya Uzantı Rozeti (FTP, SMB, MKV, PDF vb.) -->
             <TextView
                 android:id="@+id/tvIconBadge"
