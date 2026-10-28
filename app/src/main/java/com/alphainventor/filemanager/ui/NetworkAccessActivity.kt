@@ -2,7 +2,11 @@ package com.alphainventor.filemanager.ui
 
 import android.content.Intent
 import android.content.res.ColorStateList
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Matrix
+import android.graphics.Paint
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
@@ -12,6 +16,7 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.pm.ShortcutInfoCompat
 import androidx.core.content.pm.ShortcutManagerCompat
+import androidx.core.graphics.PathParser
 import androidx.core.graphics.drawable.IconCompat
 import com.alphainventor.filemanager.R
 import com.alphainventor.filemanager.databinding.ActivityNetworkAccessBinding
@@ -33,6 +38,27 @@ class NetworkAccessActivity : AppCompatActivity() {
         val density = resources.displayMetrics.density
 
         ThemeManager.applyWindowColors(this, binding.networkAccessRoot, binding.networkToolbar)
+
+        // Sağ üstteki "Ana ekrana kısayol ekle" (📲) ikonunu vektör yolundan çiz
+        try {
+            val sizePx = (24f * density).toInt().coerceAtLeast(24)
+            val bmp = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bmp)
+            val path = PathParser.createPathFromPathData(
+                "M18,1.01L8,1c-1.1,0 -2,0.9 -2,2v3h2V5h10v14H8v-1H6v3c0,1.1 0.9,2 2,2h10c1.1,0 2,-0.9 2,-2V3C20,1.9 19.1,1.01 18,1.01zM10,15h2V8H5v2h3.59L3,15.59L4.41,17L10,11.41V15z"
+            )
+            val matrix = Matrix().apply {
+                setScale(sizePx / 24f, sizePx / 24f)
+            }
+            path.transform(matrix)
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.WHITE
+                style = Paint.Style.FILL
+            }
+            canvas.drawPath(path, paint)
+            binding.btnNetworkAddToHome.setImageBitmap(bmp)
+        } catch (_: Exception) {
+        }
 
         binding.networkCard.background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
@@ -120,33 +146,21 @@ class NetworkAccessActivity : AppCompatActivity() {
     }
 
     private fun updateServerUi(running: Boolean, port: Int = 7552) {
-        val isDark = ThemeManager.isDarkOrAmoled(this)
         if (running) {
-            val ip = FtpServerService.getLocalIpAddress()
-            val pass = binding.etFtpPassword.text?.toString().orEmpty()
             binding.llFtpSetupForm.visibility = View.GONE
-            binding.llFtpRunningInfo.visibility = View.VISIBLE
-
-            binding.tvFtpUrlBox.text = "ftp://$ip:$port"
-            binding.tvFtpRunningUser.text = "pc"
-            binding.tvFtpRunningPass.text = pass.ifEmpty { "(Yok)" }
-
-            binding.tvFtpStatusInfo.text = "Yukarıdaki adresi PC'de bir dosya gezginine yazın."
-            binding.btnToggleFtpServer.text = "HİZMETİ DURDUR"
-            binding.btnToggleFtpServer.backgroundTintList = ColorStateList.valueOf(
-                if (isDark) Color.parseColor("#333333") else Color.parseColor("#E0E0E0")
-            )
-            binding.btnToggleFtpServer.setTextColor(
-                if (isDark) Color.WHITE else Color.parseColor("#212121")
-            )
+            binding.llFtpActivePanel.visibility = View.VISIBLE
+            val ip = FtpServerService.getLocalWifiIpAddress()
+            binding.tvFtpActiveUrl.text = "ftp://$ip:$port"
+            binding.tvFtpActiveUser.text = "pc"
+            val pass = binding.etFtpPassword.text?.toString().orEmpty()
+            binding.tvFtpActivePassword.text = if (pass.isEmpty()) "(yok)" else pass
+            binding.btnToggleFtpServer.text = getString(R.string.stop_service)
+            binding.btnToggleFtpServer.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#E65100"))
         } else {
             binding.llFtpSetupForm.visibility = View.VISIBLE
-            binding.llFtpRunningInfo.visibility = View.GONE
-
-            binding.tvFtpStatusInfo.text = "Başka bir cihazdan dosyalara erişmek için hizmeti başlatın."
-            binding.btnToggleFtpServer.text = "BAŞLAT"
+            binding.llFtpActivePanel.visibility = View.GONE
+            binding.btnToggleFtpServer.text = getString(R.string.start_service)
             binding.btnToggleFtpServer.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#008578"))
-            binding.btnToggleFtpServer.setTextColor(Color.WHITE)
         }
     }
 }

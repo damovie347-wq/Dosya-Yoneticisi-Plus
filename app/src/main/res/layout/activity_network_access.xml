@@ -40,7 +40,7 @@
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="Ana ekrana kısayol ekle"
             android:padding="10dp"
-            android:src="@drawable/ic_add_to_homescreen" />
+            android:src="@drawable/ic_cat_remote" />
     </LinearLayout>
 
     <ScrollView
