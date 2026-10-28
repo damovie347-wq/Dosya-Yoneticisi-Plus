@@ -441,7 +441,7 @@ class CloudAccountsActivity : AppCompatActivity() {
      * İkonlu liste: Dropbox, Google Drive, OneDrive, Box, Nextcloud, Yandex
      */
     private fun showAddCloudProviderDialog() {
-        val providers = CloudProviderType.entries.toTypedArray()
+        val providers = CloudProviderType.values()
         val icons = intArrayOf(
             R.drawable.cloud_icon_dropbox,
             R.drawable.cloud_icon_googledrive,

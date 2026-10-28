@@ -17,7 +17,7 @@ enum class AppThemeMode(val id: Int, val titleTr: String) {
         get() = titleTr
 
     companion object {
-        fun fromId(id: Int): AppThemeMode = entries.firstOrNull { it.id == id } ?: LIGHT
+        fun fromId(id: Int): AppThemeMode = values().firstOrNull { it.id == id } ?: LIGHT
     }
 }
 

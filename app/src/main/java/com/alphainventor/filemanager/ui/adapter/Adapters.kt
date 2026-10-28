@@ -214,6 +214,13 @@ class FileListAdapter(
             val primaryColor = ThemeManager.getPrimaryTextColor(ctx)
             val secondaryColor = ThemeManager.getSecondaryTextColor(ctx)
 
+            if (item.sectionHeader.isNotBlank()) {
+                tvSectionHeader.visibility = View.VISIBLE
+                tvSectionHeader.text = item.sectionHeader
+            } else {
+                tvSectionHeader.visibility = View.GONE
+            }
+            tvIconBadge.visibility = View.GONE
             tvFileName.text = item.name
             tvFileName.setTextColor(primaryColor)
 

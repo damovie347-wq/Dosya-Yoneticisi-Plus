@@ -57,7 +57,7 @@ object CloudManager {
     private val gson = Gson()
 
     // (accountId, folderId) -> List<FileItem> önbelleği (klasör geçişlerini anında açar)
-    private val folderCache = ConcurrentHashMap<String, List<FileItem>>()
+    private val folderCache: MutableMap<String, List<FileItem>> = ConcurrentHashMap()
 
     // Son oluşan Google OAuth kullanıcı onay Intent'i (UserRecoverableAuthException)
     @Volatile
@@ -111,11 +111,11 @@ object CloudManager {
     fun removeAccount(context: Context, accountId: String) {
         val updated = getAccounts(context).filterNot { it.id == accountId }
         saveAccounts(context, updated)
-        folderCache.keys.removeIf { it.startsWith("$accountId|") }
+        folderCache.keys.toList().forEach { if (it.startsWith("$accountId|")) folderCache.remove(it) }
     }
 
     fun clearAccountCache(accountId: String) {
-        folderCache.keys.removeIf { it.startsWith("$accountId|") }
+        folderCache.keys.toList().forEach { if (it.startsWith("$accountId|")) folderCache.remove(it) }
     }
 
     /**

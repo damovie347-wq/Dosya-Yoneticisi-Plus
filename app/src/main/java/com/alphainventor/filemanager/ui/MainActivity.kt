@@ -442,7 +442,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun showThemePickerDialog() {
         val currentMode = ThemeManager.getThemeMode(this)
-        val modes = AppThemeMode.entries.toTypedArray()
+        val modes = AppThemeMode.values()
         val labels = modes.map { it.titleTr }.toTypedArray()
         val checkedIdx = modes.indexOf(currentMode).coerceAtLeast(0)
 
