@@ -333,7 +333,7 @@ object CloudManager {
                         GoogleAuthUtil.clearToken(context.applicationContext, latestAcc.accessToken)
                     } catch (_: Exception) {}
                 }
-                val token = GoogleAuthUtil.getToken(context.applicationContext, googleAccount, DRIVE_OAUTH_SCOPE)
+                val token = try { GoogleAuthUtil.getToken(context.applicationContext, googleAccount, "oauth2: https://www.googleapis.com/auth/drive") } catch (_: Exception) { GoogleAuthUtil.getToken(context.applicationContext, googleAccount, DRIVE_OAUTH_SCOPE) }
                 if (!token.isNullOrBlank()) {
                     val updated = latestAcc.copy(accessToken = token)
                     addOrUpdateAccount(context.applicationContext, updated)

@@ -2,18 +2,30 @@ package com.alphainventor.filemanager.ui
 
 import android.app.Activity
 import android.content.Intent
+import android.content.res.ColorStateList
+import android.graphics.Color
+import android.graphics.Typeface
 import android.os.Bundle
 import android.text.Editable
+import android.text.TextUtils
 import android.text.TextWatcher
+import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
+import android.widget.CheckBox
 import android.widget.EditText
+import android.widget.LinearLayout
 import android.widget.PopupMenu
+import android.widget.RadioButton
+import android.widget.RadioGroup
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.widget.CompoundButtonCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -35,15 +47,17 @@ import com.alphainventor.filemanager.viewer.ImageViewerActivity
 import com.alphainventor.filemanager.viewer.MusicPlayerActivity
 import com.alphainventor.filemanager.viewer.TextEditorActivity
 import com.alphainventor.filemanager.viewer.VideoPlayerActivity
+import com.google.android.material.bottomsheet.BottomSheetDialog
 import kotlinx.coroutines.launch
 import java.io.File
 import java.util.Stack
 
 /**
  * Orijinal Dosya Yöneticisi + 3.6.7 Dosya, Medya Kategorileri ve Bulut Gezgini:
- * - Videolar, Görüntüler, Ses ve Belgeler kategorilerinde önce Klasör Kutucukları (Folder Buckets: InstaEclipse (64), Twitter (22), Movies (6) vb.) gösterilir, klasöre tıklanınca o klasördeki medya dosyaları açılır.
- * - Ana bellek ve SD kart içinde PathBar sağ tarafında "KULLANILAN 66%" / "KULLANILAN 79%" rozeti yer alır, tıklanınca ilgili diskin Bellek Analizi ekranı açılır.
- * - Yer İmi Ekle ve Geçmiş kaydı sol çekmeceyle tam senkronize çalışır.
+ * - Videolar, Görüntüler, Ses ve Belgeler kategorilerinde önce 1:1 Kare Klasör Kutucukları (Screen recordings (8), Movies (6) vb.) gösterilir, klasöre tıklanınca o klasördeki medya dosyaları açılır.
+ * - Üst sağdaki Görünüm/Sıralama (⇵) butonuna tıklandığında orijinal alt panel (location_settings.xml: Tüm klasörlere uygula, Görünüm radyo butonları, Sırala: Tarih ▼ -> Sıralama ölçütü diyaloğu, Diğerleri: Gizli dosyaları göster) açılır.
+ * - Yeniden adlandırma penceresinde (dialog_filename_input.xml) dosya uzantısı (.mp4, .mkv, .jpg) sağda sabit kalır, sadece dosya adı düzenlenir.
+ * - Silme penceresinde (dialog_delete.xml) Geri Dönüşüm Kutusu ve "Kalıcı olarak sil" onay kutusu yer alır.
  */
 class FileExplorerActivity : AppCompatActivity() {
 
@@ -89,6 +103,8 @@ class FileExplorerActivity : AppCompatActivity() {
         @Suppress("DEPRECATION")
         remoteAccount = intent.getSerializableExtra("REMOTE_ACCOUNT") as? RemoteAccount
 
+        binding.btnSortAndView.setImageResource(R.drawable.ic_ab_view_settings)
+
         setupToolbarAndActions()
         setupRecyclerView(preferGrid)
         applyCurrentTheme()
@@ -116,6 +132,12 @@ class FileExplorerActivity : AppCompatActivity() {
                         CloudProviderType.YANDEX -> R.drawable.cloud_icon_yandex
                     }
                 )
+                binding.ivRootTypeCrumb.setOnClickListener {
+                    if (cloudNavStack.size > 1) {
+                        while (cloudNavStack.size > 1) cloudNavStack.pop()
+                        loadCurrentDirectory(forceRefresh = false)
+                    }
+                }
                 binding.tvStorageBadge.visibility = View.VISIBLE
                 updateCloudQuotaLabel(acc)
                 binding.btnParentFolderUp.visibility = View.GONE
@@ -131,6 +153,12 @@ class FileExplorerActivity : AppCompatActivity() {
                 binding.tvExplorerSubtitle.visibility = View.VISIBLE
                 binding.tvExplorerSubtitle.text = "${rem.protocol.displayName} • ${rem.host}:${rem.port}"
                 binding.ivRootTypeCrumb.setImageResource(R.drawable.icon_folder_lan_s)
+                binding.ivRootTypeCrumb.setOnClickListener {
+                    if (currentPath != "/") {
+                        currentPath = "/"
+                        loadCurrentDirectory()
+                    }
+                }
                 binding.tvStorageBadge.visibility = View.GONE
                 binding.btnParentFolderUp.visibility = View.VISIBLE
             }
@@ -147,9 +175,16 @@ class FileExplorerActivity : AppCompatActivity() {
                         else -> R.drawable.icon_main_storage_s
                     }
                 )
+                // Breadcrumb'daki kategori ikonuna (🎬 / 🖼 / 🎵) tıklanınca kategori kök klasörlerine dön
+                binding.ivRootTypeCrumb.setOnClickListener {
+                    if (selectedBucketPath.isNotEmpty()) {
+                        selectedBucketPath = ""
+                        selectedBucketName = ""
+                        loadCurrentDirectory(forceRefresh = false)
+                    }
+                }
                 binding.tvStorageBadge.visibility = View.GONE
                 binding.btnParentFolderUp.visibility = View.VISIBLE
-                // Videolar, Görüntüler, Ses ve Belgeler varsayılan olarak Klasör Kutucuğu (Grid) modunda açılır
                 if (categoryName in setOf("VIDEOS", "IMAGES", "AUDIO", "DOCUMENTS")) {
                     adapter.isGridMode = true
                     updateRecyclerLayoutManager()
@@ -170,6 +205,13 @@ class FileExplorerActivity : AppCompatActivity() {
                 } else {
                     localVolumeRootPath = mainRoot
                     binding.ivRootTypeCrumb.setImageResource(R.drawable.icon_main_storage_s)
+                }
+                binding.ivRootTypeCrumb.setOnClickListener {
+                    val rootP = localVolumeRootPath.ifBlank { mainRoot }
+                    if (currentPath != rootP) {
+                        currentPath = rootP
+                        loadCurrentDirectory()
+                    }
                 }
 
                 binding.tvExplorerTitle.text = title
@@ -226,10 +268,12 @@ class FileExplorerActivity : AppCompatActivity() {
             },
             showAccountOwnerBadge = false
         )
-        adapter.isGridMode = initialGrid
+        adapter.isGridMode = initialGrid || AppSettings.viewTypeMode == 1
+        adapter.isCompactListMode = AppSettings.viewTypeMode == 2
         updateRecyclerLayoutManager()
         binding.rvFileList.adapter = adapter
         binding.rvFileList.setHasFixedSize(true)
+        binding.rvFileList.setItemViewCacheSize(24)
 
         binding.swipeRefreshFiles.setColorSchemeColors(ContextCompat.getColor(this, R.color.accent_teal))
         binding.swipeRefreshFiles.setOnRefreshListener {
@@ -241,10 +285,11 @@ class FileExplorerActivity : AppCompatActivity() {
         if (adapter.isGridMode) {
             val dm = resources.displayMetrics
             val widthDp = dm.widthPixels / dm.density
+            val isLargeIcons = AppSettings.iconSizeMode == 1
             val spans = when {
-                widthDp >= 720f -> 7
-                widthDp >= 540f -> 5
-                else -> 3
+                widthDp >= 720f -> if (isLargeIcons) 6 else 8
+                widthDp >= 540f -> if (isLargeIcons) 4 else 6
+                else -> if (isLargeIcons) 3 else 4
             }
             binding.rvFileList.layoutManager = GridLayoutManager(this, spans)
         } else {
@@ -294,32 +339,9 @@ class FileExplorerActivity : AppCompatActivity() {
             }
         })
 
-        // Görünüm (Liste / Izgara) ve Sıralama Menüsü
-        binding.btnSortAndView.setOnClickListener { view ->
-            val popup = PopupMenu(this, view)
-            popup.menu.add(0, 10, 0, if (adapter.isGridMode) "Görünüm: Liste Görünümüne Geç" else "Görünüm: Izgara (Kare) Görünümüne Geç")
-            popup.menu.add(0, 1, 1, "Ada Göre Sırala (A → Z)")
-            popup.menu.add(0, 2, 2, "Ada Göre Sırala (Z → A)")
-            popup.menu.add(0, 3, 3, "Boyuta Göre Sırala (Büyükten Küçüğe)")
-            popup.menu.add(0, 4, 4, "Boyuta Göre Sırala (Küçükten Büyüğe)")
-            popup.menu.add(0, 5, 5, "Tarihe Göre Sırala (Yeniden Eskiye)")
-            popup.menu.add(0, 6, 6, "Tarihe Göre Sırala (Eskiden Yeniye)")
-            popup.setOnMenuItemClickListener { m ->
-                when (m.itemId) {
-                    10 -> {
-                        adapter.isGridMode = !adapter.isGridMode
-                        updateRecyclerLayoutManager()
-                    }
-                    1 -> { AppSettings.sortBy = 0; AppSettings.sortAscending = true; loadCurrentDirectory() }
-                    2 -> { AppSettings.sortBy = 0; AppSettings.sortAscending = false; loadCurrentDirectory() }
-                    3 -> { AppSettings.sortBy = 1; AppSettings.sortAscending = false; loadCurrentDirectory() }
-                    4 -> { AppSettings.sortBy = 1; AppSettings.sortAscending = true; loadCurrentDirectory() }
-                    5 -> { AppSettings.sortBy = 2; AppSettings.sortAscending = false; loadCurrentDirectory() }
-                    6 -> { AppSettings.sortBy = 2; AppSettings.sortAscending = true; loadCurrentDirectory() }
-                }
-                true
-            }
-            popup.show()
+        // Orijinal Alt Görünüm / Sıralama / Gizli Dosya Paneli (Söylediğim dosya ayarındaki çıkan panel bu şekilde İstediğim bu.jpg)
+        binding.btnSortAndView.setOnClickListener {
+            showOriginalViewSortBottomSheet()
         }
 
         binding.btnExplorerMore.setOnClickListener { view ->
@@ -336,7 +358,7 @@ class FileExplorerActivity : AppCompatActivity() {
                     2 -> showCreateNewDialog(isFolder = false)
                     3 -> {
                         AppSettings.showHiddenFiles = !AppSettings.showHiddenFiles
-                        loadCurrentDirectory()
+                        loadCurrentDirectory(forceRefresh = true)
                     }
                     4 -> {
                         adapter.selectAll()
@@ -350,7 +372,6 @@ class FileExplorerActivity : AppCompatActivity() {
             popup.show()
         }
 
-        // Alt Çoklu Seçim Aksiyon Çubuğu
         binding.btnActionCopy.setOnClickListener {
             val selected = adapter.getSelectedItems()
             if (selected.isNotEmpty()) {
@@ -452,6 +473,335 @@ class FileExplorerActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Orijinal APK'daki (res/xml/location_settings.xml & Söylediğim dosya ayarındaki çıkan panel bu şekilde İstediğim bu.jpg)
+     * Alt Görünüm / Sıralama / Gizli Dosya Paneli:
+     * 1) Tüm klasörlere uygula [ ]
+     * 2) Görünüm:
+     *    - [ ◯ Liste (v_shape_listview) ]   [ 🔘 Izgara (v_shape_gridview) ]   [ ◯ Detaylı (v_shape_detailview) ]
+     *    - [ 🔘 Küçük Boyut (v_shape_icon_medium) ]   [ ◯ Büyük Boyut (v_shape_icon_large) ]
+     * 3) Sırala:
+     *    - Tarih ▼ (Tıklanınca "Sıralama ölçütü" radyo butonlu diyaloğu açılır)
+     * 4) Diğerleri:
+     *    - Gizli dosyaları göster [ ] (İşaretlendiği anda .aa, .Private, .statuses gibi gizli medya klasörlerini de açar!)
+     */
+    private fun showOriginalViewSortBottomSheet() {
+        val sheet = BottomSheetDialog(this)
+        val density = resources.displayMetrics.density
+        val bgColor = ThemeManager.getCardColor(this)
+        val primaryColor = ThemeManager.getPrimaryTextColor(this)
+        val secondaryColor = ThemeManager.getSecondaryTextColor(this)
+        val dividerColor = ThemeManager.getDividerColor(this)
+        val tealColor = Color.parseColor("#008578")
+        val tintList = ColorStateList(
+            arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
+            intArrayOf(tealColor, secondaryColor)
+        )
+
+        val scroll = ScrollView(this).apply {
+            setBackgroundColor(bgColor)
+        }
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(bgColor)
+            setPadding(0, (6 * density).toInt(), 0, (12 * density).toInt())
+        }
+        scroll.addView(root)
+
+        fun addDivider() {
+            root.addView(View(this).apply {
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, (1 * density).toInt())
+                setBackgroundColor(dividerColor)
+            })
+        }
+
+        fun addSectionTitle(title: String) {
+            root.addView(TextView(this).apply {
+                text = title
+                textSize = 13.5f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(tealColor)
+                val pH = (20 * density).toInt()
+                val pTop = (14 * density).toInt()
+                val pBot = (6 * density).toInt()
+                setPadding(pH, pTop, pH, pBot)
+            })
+        }
+
+        // 1. SATIR: Tüm klasörlere uygula
+        val rowApplyAll = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            val pH = (20 * density).toInt()
+            val pV = (12 * density).toInt()
+            setPadding(pH, pV, pH, pV)
+            setBackgroundResource(android.R.drawable.list_selector_background)
+            isClickable = true
+            isFocusable = true
+        }
+        val tvApplyAll = TextView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            text = "Tüm klasörlere uygula"
+            textSize = 15.5f
+            setTextColor(primaryColor)
+        }
+        val cbApplyAll = CheckBox(this).apply {
+            isChecked = AppSettings.applyViewToAllFolders
+            CompoundButtonCompat.setButtonTintList(this, tintList)
+            setOnCheckedChangeListener { _, checked ->
+                AppSettings.applyViewToAllFolders = checked
+            }
+        }
+        rowApplyAll.setOnClickListener { cbApplyAll.isChecked = !cbApplyAll.isChecked }
+        rowApplyAll.addView(tvApplyAll)
+        rowApplyAll.addView(cbApplyAll)
+        root.addView(rowApplyAll)
+
+        addDivider()
+
+        // 2. BÖLÜM: Görünüm (Üst satır: Liste | Izgara | Detaylı, Alt satır: Küçük Simge | Büyük Simge)
+        addSectionTitle("Görünüm")
+
+        val pH = (20 * density).toInt()
+        val rgViewType = RadioGroup(this).apply {
+            orientation = RadioGroup.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(pH, (4 * density).toInt(), pH, (4 * density).toInt())
+        }
+
+        fun createIconRadioButton(idVal: Int, drawableRes: Int, checked: Boolean): RadioButton {
+            return RadioButton(this).apply {
+                id = idVal
+                layoutParams = RadioGroup.LayoutParams(0, (48 * density).toInt(), 1f)
+                isChecked = checked
+                CompoundButtonCompat.setButtonTintList(this, tintList)
+                val dr = ContextCompat.getDrawable(this@FileExplorerActivity, drawableRes)?.mutate()
+                dr?.setTint(if (ThemeManager.isDarkOrAmoled(this@FileExplorerActivity)) Color.WHITE else Color.parseColor("#212121"))
+                setCompoundDrawablesWithIntrinsicBounds(dr, null, null, null)
+                compoundDrawablePadding = (10 * density).toInt()
+            }
+        }
+
+        val curViewMode = if (adapter.isGridMode) 1 else if (adapter.isCompactListMode) 2 else 0
+        val rbList = createIconRadioButton(1001, R.drawable.v_shape_listview, curViewMode == 0)
+        val rbGrid = createIconRadioButton(1002, R.drawable.v_shape_gridview, curViewMode == 1)
+        val rbDetail = createIconRadioButton(1003, R.drawable.v_shape_detailview, curViewMode == 2)
+        rgViewType.addView(rbList)
+        rgViewType.addView(rbGrid)
+        rgViewType.addView(rbDetail)
+
+        rgViewType.setOnCheckedChangeListener { _, checkedId ->
+            when (checkedId) {
+                1001 -> {
+                    AppSettings.viewTypeMode = 0
+                    adapter.isCompactListMode = false
+                    adapter.isGridMode = false
+                }
+                1002 -> {
+                    AppSettings.viewTypeMode = 1
+                    adapter.isCompactListMode = false
+                    adapter.isGridMode = true
+                }
+                1003 -> {
+                    AppSettings.viewTypeMode = 2
+                    adapter.isGridMode = false
+                    adapter.isCompactListMode = true
+                }
+            }
+            updateRecyclerLayoutManager()
+            sheet.dismiss()
+        }
+        root.addView(rgViewType)
+
+        // İkinci Radyo Satırı: Simge/Kare Boyutu (Küçük | Büyük | Boşluk)
+        val rgIconSize = RadioGroup(this).apply {
+            orientation = RadioGroup.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(pH, (2 * density).toInt(), pH, (8 * density).toInt())
+        }
+        val curSizeMode = AppSettings.iconSizeMode
+        val rbMediumSize = createIconRadioButton(2001, R.drawable.v_shape_icon_medium, curSizeMode == 0)
+        val rbLargeSize = createIconRadioButton(2002, R.drawable.v_shape_icon_large, curSizeMode == 1)
+        val spacerView = View(this).apply {
+            layoutParams = RadioGroup.LayoutParams(0, (48 * density).toInt(), 1f)
+            visibility = View.INVISIBLE
+        }
+        rgIconSize.addView(rbMediumSize)
+        rgIconSize.addView(rbLargeSize)
+        rgIconSize.addView(spacerView)
+
+        rgIconSize.setOnCheckedChangeListener { _, checkedId ->
+            AppSettings.iconSizeMode = if (checkedId == 2002) 1 else 0
+            updateRecyclerLayoutManager()
+            adapter.notifyDataSetChanged()
+            sheet.dismiss()
+        }
+        root.addView(rgIconSize)
+
+        addDivider()
+
+        // 3. BÖLÜM: Sırala (Tarih ▼ -> Tıklanınca "Sıralama ölçütü" diyaloğu açılır)
+        addSectionTitle("Sırala")
+
+        val rowSort = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            val pV = (12 * density).toInt()
+            setPadding(pH, pV, pH, pV)
+            setBackgroundResource(android.R.drawable.list_selector_background)
+            isClickable = true
+            isFocusable = true
+        }
+        val tvSortCurrent = TextView(this).apply {
+            text = getCurrentSortDisplayLabel()
+            textSize = 15.5f
+            setTextColor(primaryColor)
+        }
+        rowSort.addView(tvSortCurrent)
+        rowSort.setOnClickListener {
+            showOriginalSortCriteriaDialog(
+                onSortSelected = {
+                    tvSortCurrent.text = getCurrentSortDisplayLabel()
+                    sheet.dismiss()
+                    loadCurrentDirectory(forceRefresh = false)
+                }
+            )
+        }
+        root.addView(rowSort)
+
+        addDivider()
+
+        // 4. BÖLÜM: Diğerleri -> Gizli dosyaları göster
+        addSectionTitle("Diğerleri")
+
+        val rowShowHidden = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            val pV = (12 * density).toInt()
+            setPadding(pH, pV, pH, pV)
+            setBackgroundResource(android.R.drawable.list_selector_background)
+            isClickable = true
+            isFocusable = true
+        }
+        val tvShowHidden = TextView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            text = "Gizli dosyaları göster"
+            textSize = 15.5f
+            setTextColor(primaryColor)
+        }
+        val cbShowHidden = CheckBox(this).apply {
+            isChecked = AppSettings.showHiddenFiles
+            CompoundButtonCompat.setButtonTintList(this, tintList)
+            setOnCheckedChangeListener { _, checked ->
+                if (AppSettings.showHiddenFiles != checked) {
+                    AppSettings.showHiddenFiles = checked
+                    sheet.dismiss()
+                    loadCurrentDirectory(forceRefresh = true)
+                }
+            }
+        }
+        rowShowHidden.setOnClickListener {
+            cbShowHidden.isChecked = !cbShowHidden.isChecked
+        }
+        rowShowHidden.addView(tvShowHidden)
+        rowShowHidden.addView(cbShowHidden)
+        root.addView(rowShowHidden)
+
+        // Normal klasörlerde "Küçük resimleri göster" seçeneğini de göster
+        if (mode == "LOCAL") {
+            val rowThumbs = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                val pV = (12 * density).toInt()
+                setPadding(pH, pV, pH, pV)
+                setBackgroundResource(android.R.drawable.list_selector_background)
+                isClickable = true
+                isFocusable = true
+            }
+            val tvThumbs = TextView(this).apply {
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                text = "Küçük resimleri göster"
+                textSize = 15.5f
+                setTextColor(primaryColor)
+            }
+            val cbThumbs = CheckBox(this).apply {
+                isChecked = AppSettings.showThumbnails
+                CompoundButtonCompat.setButtonTintList(this, tintList)
+                setOnCheckedChangeListener { _, checked ->
+                    AppSettings.showThumbnails = checked
+                    adapter.notifyDataSetChanged()
+                }
+            }
+            rowThumbs.setOnClickListener { cbThumbs.isChecked = !cbThumbs.isChecked }
+            rowThumbs.addView(tvThumbs)
+            rowThumbs.addView(cbThumbs)
+            root.addView(rowThumbs)
+        }
+
+        sheet.setContentView(scroll)
+        sheet.show()
+    }
+
+    private fun getCurrentSortDisplayLabel(): String {
+        val arrow = if (AppSettings.sortAscending) "▲" else "▼"
+        return when (AppSettings.sortBy) {
+            4 -> "Sıralama yok"
+            0 -> "Ad $arrow"
+            1 -> "Boyut $arrow"
+            2 -> "Tarih $arrow"
+            5 -> "Çekim Tarihi $arrow"
+            3 -> "Tür $arrow"
+            else -> "Tarih ▼"
+        }
+    }
+
+    /**
+     * Video 2'deki (00:14 ve 00:39) Orijinal "Sıralama ölçütü" Radyo Diyaloğu:
+     * - Sıralama yok
+     * - Ad ▲ / Ad ▼
+     * - Boyut ▲ / Boyut ▼
+     * - Tarih ▲ / Tarih ▼
+     * - (Görüntüler kategorisinde: Çekim Tarihi ▲ / Çekim Tarihi ▼)
+     * - Tür ▲ / Tür ▼
+     */
+    private fun showOriginalSortCriteriaDialog(onSortSelected: () -> Unit) {
+        data class SortOption(val label: String, val sortBy: Int, val asc: Boolean)
+
+        val options = ArrayList<SortOption>().apply {
+            add(SortOption("Sıralama yok", 4, false))
+            add(SortOption("Ad ▲", 0, true))
+            add(SortOption("Ad ▼", 0, false))
+            add(SortOption("Boyut ▲", 1, true))
+            add(SortOption("Boyut ▼", 1, false))
+            add(SortOption("Tarih ▲", 2, true))
+            add(SortOption("Tarih ▼", 2, false))
+            if (categoryName == "IMAGES") {
+                add(SortOption("Çekim Tarihi ▲", 5, true))
+                add(SortOption("Çekim Tarihi ▼", 5, false))
+            }
+            add(SortOption("Tür ▲", 3, true))
+            add(SortOption("Tür ▼", 3, false))
+        }
+
+        val labels = options.map { it.label }.toTypedArray()
+        val currentIdx = options.indexOfFirst {
+            if (it.sortBy == 4) AppSettings.sortBy == 4
+            else it.sortBy == AppSettings.sortBy && it.asc == AppSettings.sortAscending
+        }.coerceAtLeast(0)
+
+        AlertDialog.Builder(this)
+            .setTitle("Sıralama ölçütü")
+            .setSingleChoiceItems(labels, currentIdx) { dialog, which ->
+                val chosen = options[which]
+                AppSettings.sortBy = chosen.sortBy
+                AppSettings.sortAscending = chosen.asc
+                dialog.dismiss()
+                onSortSelected()
+            }
+            .setNegativeButton("İPTAL", null)
+            .show()
+    }
+
     private fun updateSelectionUi() {
         val selected = adapter.getSelectedItems()
         if (adapter.selectionMode && selected.isNotEmpty()) {
@@ -462,10 +812,7 @@ class FileExplorerActivity : AppCompatActivity() {
             binding.tvExplorerTitle.text = when (mode) {
                 "CLOUD" -> cloudAccount?.provider?.displayName ?: "Bulut"
                 "REMOTE" -> remoteAccount?.displayName ?: "Uzak"
-                "CATEGORY" -> {
-                    val baseTitle = intent.getStringExtra("TITLE") ?: categoryName
-                    if (selectedBucketName.isNotBlank()) selectedBucketName else baseTitle
-                }
+                "CATEGORY" -> intent.getStringExtra("TITLE") ?: categoryName
                 else -> {
                     val rootPath = localVolumeRootPath.ifBlank { LocalFileRepository.rootStorageDir.absolutePath }
                     if (currentPath == rootPath) localVolumeTitle else File(currentPath).name
@@ -500,7 +847,6 @@ class FileExplorerActivity : AppCompatActivity() {
                         driveConsentLauncher.launch(recovery)
                         return@launch
                     }
-                    // Güncel token'ı cloudAccount'ta sakla
                     val refreshedAcc = CloudManager.getAccounts(this@FileExplorerActivity).firstOrNull { it.id == acc.id }
                     if (refreshedAcc != null) {
                         cloudAccount = refreshedAcc
@@ -519,10 +865,8 @@ class FileExplorerActivity : AppCompatActivity() {
                 "CATEGORY" -> {
                     if (categoryName in setOf("VIDEOS", "IMAGES", "AUDIO", "DOCUMENTS")) {
                         if (selectedBucketPath.isEmpty()) {
-                            // 1. AŞAMA: Klasör Kutucukları (Folder Buckets: InstaEclipse (64), Twitter (22), Movies (6) vb.)
                             LocalFileRepository.getCategoryFolderBuckets(this@FileExplorerActivity, categoryName)
                         } else {
-                            // 2. AŞAMA: Seçilen klasörün içindeki medya dosyaları
                             LocalFileRepository.getCategoryFilesInBucket(
                                 this@FileExplorerActivity,
                                 categoryName,
@@ -558,14 +902,22 @@ class FileExplorerActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Orijinal APK Breadcrumb Çubuğu (Video 1 00:05-00:11 & Video 4 00:34-00:36):
+     * - Kategori kökündeyken: sadece 🏠 > [🎬] görünür (yazı tekrarı olmaz).
+     * - Kategori içinde bir klasöre (örn. Movies) girildiğinde: 🏠 > [🎬] > Movies görünür!
+     */
     private fun renderBreadcrumbs() {
         binding.llBreadcrumbContainer.removeAllViews()
         val crumbs: List<Pair<String, () -> Unit>> = when (mode) {
             "CLOUD" -> {
-                cloudNavStack.mapIndexed { index, crumb ->
-                    crumb.name to {
-                        if (index < cloudNavStack.size - 1) {
-                            while (cloudNavStack.size > index + 1) {
+                if (cloudNavStack.size <= 1) {
+                    emptyList()
+                } else {
+                    cloudNavStack.drop(1).mapIndexed { idx, crumb ->
+                        val targetDepth = idx + 2
+                        crumb.name to {
+                            while (cloudNavStack.size > targetDepth) {
                                 cloudNavStack.pop()
                             }
                             loadCurrentDirectory(forceRefresh = false)
@@ -575,14 +927,7 @@ class FileExplorerActivity : AppCompatActivity() {
             }
             "REMOTE" -> {
                 val parts = currentPath.trim('/').split('/').filter { it.isNotEmpty() }
-                val list = mutableListOf<Pair<String, () -> Unit>>(
-                    (remoteAccount?.displayName ?: "Uzak") to {
-                        if (currentPath != "/") {
-                            currentPath = "/"
-                            loadCurrentDirectory()
-                        }
-                    }
-                )
+                val list = mutableListOf<Pair<String, () -> Unit>>()
                 var accPath = ""
                 for (p in parts) {
                     accPath += "/$p"
@@ -597,32 +942,16 @@ class FileExplorerActivity : AppCompatActivity() {
                 list
             }
             "CATEGORY" -> {
-                val rootTitle = intent.getStringExtra("TITLE") ?: categoryName
-                val list = mutableListOf<Pair<String, () -> Unit>>(
-                    rootTitle to {
-                        if (selectedBucketPath.isNotEmpty()) {
-                            selectedBucketPath = ""
-                            selectedBucketName = ""
-                            loadCurrentDirectory()
-                        }
-                    }
-                )
                 if (selectedBucketName.isNotEmpty()) {
-                    list.add(selectedBucketName to {})
+                    listOf(selectedBucketName to {})
+                } else {
+                    emptyList()
                 }
-                list
             }
             else -> {
                 val rootPath = localVolumeRootPath.ifBlank { LocalFileRepository.rootStorageDir.absolutePath }
                 val rel = currentPath.removePrefix(rootPath).trim('/')
-                val list = mutableListOf<Pair<String, () -> Unit>>(
-                    localVolumeTitle to {
-                        if (currentPath != rootPath) {
-                            currentPath = rootPath
-                            loadCurrentDirectory()
-                        }
-                    }
-                )
+                val list = mutableListOf<Pair<String, () -> Unit>>()
                 if (rel.isNotEmpty()) {
                     var build = rootPath
                     for (segment in rel.split("/")) {
@@ -643,7 +972,7 @@ class FileExplorerActivity : AppCompatActivity() {
         val visibleCrumbs = crumbs.filter { it.first.isNotEmpty() }
         visibleCrumbs.forEachIndexed { idx, (label, action) ->
             val tv = TextView(this).apply {
-                text = if (idx == 0) label else " ›  $label"
+                text = "›  $label"
                 textSize = 14f
                 setTextColor(
                     if (idx == visibleCrumbs.lastIndex) ThemeManager.getPrimaryTextColor(this@FileExplorerActivity)
@@ -674,7 +1003,6 @@ class FileExplorerActivity : AppCompatActivity() {
                     loadCurrentDirectory()
                 }
                 "CATEGORY" -> {
-                    // Klasör Kutucuğuna (örn: InstaEclipse (64) veya Movies (6)) tıklandığında o klasörün medyalarını aç!
                     selectedBucketPath = item.path
                     selectedBucketName = item.name
                     LocalFileRepository.recordHistory(this, item, intent.getStringExtra("TITLE") ?: "Medya")
@@ -689,7 +1017,6 @@ class FileExplorerActivity : AppCompatActivity() {
             return
         }
 
-        // Geçmişe (Sol Çekmece 3. Sekme 🕒) kaydet
         if (item.sourceType == FileSourceType.LOCAL) {
             val section = when (mode) {
                 "CATEGORY" -> intent.getStringExtra("TITLE") ?: "Videolar"
@@ -708,10 +1035,18 @@ class FileExplorerActivity : AppCompatActivity() {
             when {
                 item.isVideo -> {
                     if (AppSettings.useInternalVideoPlayer) {
+                        val siblingVideos = fullCurrentItems.filter { !it.isDirectory && it.isVideo }
+                        val siblingPaths = ArrayList(siblingVideos.map { if (it.sourceType == FileSourceType.CLOUD) it.downloadUrl else it.path })
+                        val siblingTitles = ArrayList(siblingVideos.map { it.name })
+                        val curIdx = siblingVideos.indexOfFirst { it.id == item.id }.coerceAtLeast(0)
+
                         startActivity(Intent(this@FileExplorerActivity, VideoPlayerActivity::class.java).apply {
                             putExtra("VIDEO_URL", if (item.sourceType == FileSourceType.CLOUD) item.downloadUrl else item.path)
                             putExtra("VIDEO_TITLE", item.name)
                             putExtra("AUTH_TOKEN", activeToken)
+                            putStringArrayListExtra("PLAYLIST_URLS", siblingPaths)
+                            putStringArrayListExtra("PLAYLIST_TITLES", siblingTitles)
+                            putExtra("PLAYLIST_INDEX", curIdx)
                         })
                     } else {
                         LocalFileRepository.openWithExternalChooser(this@FileExplorerActivity, item, activeToken)
@@ -763,7 +1098,7 @@ class FileExplorerActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
             .setTitle(if (isFolder) getString(R.string.menu_new_folder) else getString(R.string.menu_new_file))
             .setView(et)
-            .setPositiveButton("Oluştur") { _, _ ->
+            .setPositiveButton("TAMAM") { _, _ ->
                 val name = et.text?.toString()?.trim().orEmpty()
                 if (name.isNotEmpty()) {
                     val ok = if (isFolder) {
@@ -774,57 +1109,181 @@ class FileExplorerActivity : AppCompatActivity() {
                     if (ok) loadCurrentDirectory(forceRefresh = true)
                 }
             }
-            .setNegativeButton("İptal", null)
+            .setNegativeButton("İPTAL", null)
             .show()
     }
 
+    /**
+     * Orijinal APK Yeniden Adlandırma Diyaloğu (res/layout/dialog_filename_input.xml):
+     * - Dosya yeniden adlandırılırken uzantı (.mp4, .mkv, .jpg vb.) sağda sabit bir TextView olarak durur!
+     * - Soldaki EditText içinde sadece dosyanın uzantısız adı yer alır, böylece kullanıcı .mp4 uzantısını bozmadan sadece ismi değiştirir!
+     */
     private fun showRenameDialog(item: FileItem) {
-        val et = EditText(this).apply {
-            setText(item.name)
-            setSingleLine()
+        val density = resources.displayMetrics.density
+        val primaryColor = ThemeManager.getPrimaryTextColor(this)
+        val hasExtension = !item.isDirectory && item.name.contains('.') && !item.name.startsWith(".")
+        val baseName = if (hasExtension) item.name.substringBeforeLast('.') else item.name
+        val extWithDot = if (hasExtension) ".${item.name.substringAfterLast('.')}" else ""
+
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            isBaselineAligned = true
+            val pH = (22 * density).toInt()
+            val pV = (14 * density).toInt()
+            setPadding(pH, pV, pH, (4 * density).toInt())
         }
+
+        val etBaseName = EditText(this).apply {
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            setText(baseName)
+            setSingleLine(true)
+            setTextColor(primaryColor)
+            textSize = 16f
+            selectAll()
+        }
+
+        val tvExtension = TextView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                marginStart = (4 * density).toInt()
+            }
+            text = extWithDot
+            textSize = 16f
+            setTextColor(primaryColor)
+            visibility = if (hasExtension) View.VISIBLE else View.GONE
+        }
+
+        container.addView(etBaseName)
+        container.addView(tvExtension)
+
         AlertDialog.Builder(this)
             .setTitle(getString(R.string.action_rename))
-            .setView(et)
-            .setPositiveButton("Kaydet") { _, _ ->
-                val newName = et.text?.toString()?.trim().orEmpty()
-                if (newName.isNotEmpty() && mode == "LOCAL") {
-                    val ok = LocalFileRepository.renameFile(File(item.path), newName)
+            .setView(container)
+            .setPositiveButton("TAMAM") { _, _ ->
+                val newBase = etBaseName.text?.toString()?.trim().orEmpty()
+                if (newBase.isNotEmpty() && mode in setOf("LOCAL", "CATEGORY")) {
+                    val finalFileName = if (hasExtension) "$newBase$extWithDot" else newBase
+                    val ok = LocalFileRepository.renameFile(File(item.path), finalFileName, this)
                     adapter.clearSelection()
                     updateSelectionUi()
-                    if (ok) loadCurrentDirectory(forceRefresh = true)
+                    if (ok) {
+                        loadCurrentDirectory(forceRefresh = true)
+                    } else {
+                        Toast.makeText(this, "Dosya adı değiştirilemedi.", Toast.LENGTH_SHORT).show()
+                    }
                 }
             }
-            .setNegativeButton("İptal", null)
+            .setNegativeButton("İPTAL", null)
             .show()
     }
 
+    /**
+     * Orijinal APK Silme Diyaloğu (res/layout/dialog_delete.xml):
+     * - Dosya/klasör adı ve boyutunu gösterir.
+     * - Geri Dönüşüm Kutusu etkinse altta "Kalıcı olarak sil" onay kutusu sunar:
+     *   işaretlenmezse Geri Dönüşüm Kutusuna taşır, işaretlenirse kalıcı olarak siler!
+     */
     private fun showDeleteConfirmDialog(items: List<FileItem>) {
+        val density = resources.displayMetrics.density
+        val primaryColor = ThemeManager.getPrimaryTextColor(this)
+        val secondaryColor = ThemeManager.getSecondaryTextColor(this)
+        val tealColor = Color.parseColor("#008578")
+
+        val isInsideRecycleBin = currentPath.startsWith(LocalFileRepository.recycleBinDir.absolutePath)
+        val canUseRecycleBin = AppSettings.useRecycleBin && !isInsideRecycleBin
+
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val pH = (24 * density).toInt()
+            val pV = (16 * density).toInt()
+            setPadding(pH, pV, pH, (6 * density).toInt())
+        }
+
+        val tvPrompt = TextView(this).apply {
+            text = if (items.size == 1) {
+                "\"${items.first().name}\" öğesini silmek istediğinizden emin misiniz?"
+            } else {
+                "Seçilen ${items.size} öğeyi silmek istediğinizden emin misiniz?"
+            }
+            textSize = 15.5f
+            setTextColor(primaryColor)
+        }
+
+        val totalSize = items.sumOf { it.size }
+        val tvDetails = TextView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = (10 * density).toInt()
+            }
+            text = if (canUseRecycleBin) {
+                "Toplam boyut: ${FormatUtils.formatSizeDetailed(totalSize)}\n(Varsayılan olarak Geri Dönüşüm Kutusuna taşınır)"
+            } else {
+                "Toplam boyut: ${FormatUtils.formatSizeDetailed(totalSize)}\n(Bu öğeler cihazdan kalıcı olarak silinecek)"
+            }
+            textSize = 13f
+            setTextColor(secondaryColor)
+        }
+
+        val cbPermanentDelete = CheckBox(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = (12 * density).toInt()
+            }
+            text = "Kalıcı olarak sil"
+            textSize = 14.5f
+            setTextColor(primaryColor)
+            isChecked = !canUseRecycleBin
+            visibility = if (canUseRecycleBin) View.VISIBLE else View.GONE
+            val tintList = ColorStateList(
+                arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
+                intArrayOf(tealColor, secondaryColor)
+            )
+            CompoundButtonCompat.setButtonTintList(this, tintList)
+        }
+
+        layout.addView(tvPrompt)
+        layout.addView(tvDetails)
+        layout.addView(cbPermanentDelete)
+
         AlertDialog.Builder(this)
-            .setTitle("Sil (${items.size} öğe)")
-            .setMessage("Seçilen ${items.size} öğeyi silmek istediğinize emin misiniz?")
-            .setPositiveButton("Sil") { _, _ ->
+            .setTitle("Sil")
+            .setView(layout)
+            .setPositiveButton("TAMAM") { _, _ ->
+                val moveToTrash = canUseRecycleBin && !cbPermanentDelete.isChecked
                 lifecycleScope.launch {
-                    val count = LocalFileRepository.deleteFiles(items, moveToRecycleBin = true)
+                    val count = LocalFileRepository.deleteFiles(
+                        items = items,
+                        moveToRecycleBin = moveToTrash,
+                        context = this@FileExplorerActivity
+                    )
                     adapter.clearSelection()
                     updateSelectionUi()
-                    Toast.makeText(this@FileExplorerActivity, "$count öğe silindi.", Toast.LENGTH_SHORT).show()
+                    val msg = if (moveToTrash) {
+                        "$count öğe Geri Dönüşüm Kutusuna taşındı."
+                    } else {
+                        "$count öğe kalıcı olarak silindi."
+                    }
+                    Toast.makeText(this@FileExplorerActivity, msg, Toast.LENGTH_SHORT).show()
                     loadCurrentDirectory(forceRefresh = true)
                 }
             }
-            .setNegativeButton("Kalsın", null)
+            .setNegativeButton("İPTAL", null)
             .show()
     }
 
     private fun showCompressZipDialog(items: List<FileItem>) {
         val et = EditText(this).apply {
-            setText("${items.first().name.substringBeforeLast('.')}.zip")
+            setText(items.first().name.substringBeforeLast('.'))
             setSingleLine()
+            selectAll()
         }
         AlertDialog.Builder(this)
             .setTitle(getString(R.string.action_compress))
             .setView(et)
-            .setPositiveButton("Sıkıştır") { _, _ ->
+            .setPositiveButton("TAMAM") { _, _ ->
                 val zipName = et.text?.toString()?.trim().orEmpty().ifEmpty { "arsiv.zip" }
                 val destZip = File(currentPath, if (zipName.endsWith(".zip")) zipName else "$zipName.zip")
                 lifecycleScope.launch {
@@ -836,7 +1295,7 @@ class FileExplorerActivity : AppCompatActivity() {
                     if (ok) loadCurrentDirectory(forceRefresh = true)
                 }
             }
-            .setNegativeButton("İptal", null)
+            .setNegativeButton("İPTAL", null)
             .show()
     }
 
@@ -874,7 +1333,7 @@ class FileExplorerActivity : AppCompatActivity() {
                         "Değiştirilme: ${FormatUtils.formatSectionDate(item.lastModified)}" +
                         accountLine + checksumInfo
                 )
-                .setPositiveButton("Tamam", null)
+                .setPositiveButton("TAMAM", null)
                 .show()
         }
     }
@@ -904,7 +1363,6 @@ class FileExplorerActivity : AppCompatActivity() {
             }
             "CATEGORY" -> {
                 if (selectedBucketPath.isNotEmpty()) {
-                    // Klasör içinden Kategori Klasör Kutucukları ekranına geri dön
                     selectedBucketPath = ""
                     selectedBucketName = ""
                     loadCurrentDirectory(forceRefresh = false)

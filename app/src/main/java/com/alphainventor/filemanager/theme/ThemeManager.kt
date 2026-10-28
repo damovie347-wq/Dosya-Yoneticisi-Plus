@@ -12,6 +12,10 @@ import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatDelegate
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 
 enum class AppThemeMode(val id: Int, val titleTr: String) {
     LIGHT(0, "Açık (Varsayılan)"),
@@ -69,18 +73,18 @@ object ThemeManager {
     fun getSurfaceColor(context: Context): Int = when (getThemeMode(context)) {
         AppThemeMode.LIGHT -> Color.parseColor("#FAFAFA")
         AppThemeMode.DARK -> Color.parseColor("#1E1E1E")
-        AppThemeMode.AMOLED -> Color.parseColor("#141414")
+        AppThemeMode.AMOLED -> Color.parseColor("#121212")
     }
 
     fun getCardColor(context: Context): Int = when (getThemeMode(context)) {
         AppThemeMode.LIGHT -> Color.parseColor("#FFFFFF")
         AppThemeMode.DARK -> Color.parseColor("#222222")
-        AppThemeMode.AMOLED -> Color.parseColor("#161616")
+        AppThemeMode.AMOLED -> Color.parseColor("#141414")
     }
 
     fun getToolbarColor(context: Context): Int = when (getThemeMode(context)) {
         AppThemeMode.LIGHT, AppThemeMode.DARK -> Color.parseColor("#212121")
-        AppThemeMode.AMOLED -> Color.parseColor("#0D0D0D")
+        AppThemeMode.AMOLED -> Color.parseColor("#000000")
     }
 
     fun getPrimaryTextColor(context: Context): Int = when (getThemeMode(context)) {
@@ -92,7 +96,7 @@ object ThemeManager {
     fun getSecondaryTextColor(context: Context): Int = when (getThemeMode(context)) {
         AppThemeMode.LIGHT -> Color.parseColor("#757575")
         AppThemeMode.DARK -> Color.parseColor("#B0BEC5")
-        AppThemeMode.AMOLED -> Color.parseColor("#B8C4CC")
+        AppThemeMode.AMOLED -> Color.parseColor("#C8D2D8")
     }
 
     fun getDividerColor(context: Context): Int = when (getThemeMode(context)) {
@@ -110,15 +114,15 @@ object ThemeManager {
             when (getThemeMode(context)) {
                 AppThemeMode.LIGHT -> {
                     setColor(Color.parseColor("#FFFFFF"))
-                    setStroke(strokePx, Color.parseColor("#C2C2C2"))
+                    setStroke(strokePx, Color.parseColor("#CCCCCC"))
                 }
                 AppThemeMode.DARK -> {
-                    setColor(Color.parseColor("#262626"))
+                    setColor(Color.parseColor("#242424"))
                     setStroke(strokePx, Color.parseColor("#4A4A4A"))
                 }
                 AppThemeMode.AMOLED -> {
-                    setColor(Color.parseColor("#181818"))
-                    setStroke(strokePx, Color.parseColor("#4A4A4A"))
+                    setColor(Color.parseColor("#161616"))
+                    setStroke(strokePx, Color.parseColor("#484848"))
                 }
             }
         }
@@ -139,22 +143,80 @@ object ThemeManager {
                     setStroke(1, Color.parseColor("#484848"))
                 }
                 AppThemeMode.AMOLED -> {
-                    setColor(Color.parseColor("#1F1F1F"))
+                    setColor(Color.parseColor("#1C1C1C"))
                     setStroke(1, Color.parseColor("#4A4A4A"))
                 }
             }
         }
     }
 
-    fun applyWindowColors(activity: Activity, rootView: View, toolbarView: View? = null) {
+    fun getStatusBarHeightPx(context: Context): Int {
+        val resId = context.resources.getIdentifier("status_bar_height", "dimen", "android")
+        return if (resId > 0) context.resources.getDimensionPixelSize(resId) else 0
+    }
+
+    /**
+     * Üstteki saat/pil/Wi-Fi durum çubuğu (status bar) ile uygulama araç çubuğunun (toolbar)
+     * çakışmasını Android 4'ten Android 15/16'ya (One UI 7 dahil) kadar %100 engelleyen sistem:
+     * - WindowCompat.setDecorFitsSystemWindows(window, true) uygular.
+     * - Eğer cihaz/ROM edge-to-edge zorlaması nedeniyle rootView'u y=0'da (saat panelinin altında)
+     *   bırakırsa, durum çubuğu yüksekliği kadar otomatik üst boşluk (paddingTop) ekler.
+     */
+    fun applyWindowColors(activity: Activity, rootView: View, toolbarView: View? = null, extraInsetTarget: View? = null) {
         val bg = getBackgroundColor(activity)
         val toolbarColor = getToolbarColor(activity)
         rootView.setBackgroundColor(bg)
         toolbarView?.setBackgroundColor(toolbarColor)
         adaptViewTreeColors(activity, rootView, toolbarView)
+
+        WindowCompat.setDecorFitsSystemWindows(activity.window, true)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             activity.window.statusBarColor = Color.BLACK
             activity.window.navigationBarColor = if (getThemeMode(activity) == AppThemeMode.AMOLED) Color.BLACK else toolbarColor
+        }
+        WindowInsetsControllerCompat(activity.window, rootView).apply {
+            isAppearanceLightStatusBars = false
+            isAppearanceLightNavigationBars = false
+        }
+
+        ensureStatusBarClearance(activity, rootView, extraInsetTarget)
+    }
+
+    private fun ensureStatusBarClearance(activity: Activity, rootView: View, extraInsetTarget: View? = null) {
+        ViewCompat.setOnApplyWindowInsetsListener(rootView) { v, windowInsets ->
+            val sysBars = windowInsets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+            )
+            applyTopBottomSafePadding(activity, v, sysBars.top, sysBars.bottom)
+            if (extraInsetTarget != null) {
+                applyTopBottomSafePadding(activity, extraInsetTarget, sysBars.top, sysBars.bottom)
+            }
+            windowInsets
+        }
+        rootView.post {
+            val statusBarH = getStatusBarHeightPx(activity)
+            if (statusBarH > 0) {
+                val loc = IntArray(2)
+                rootView.getLocationOnScreen(loc)
+                // Eğer rootView ekranın en tepesindeyse (loc[1] == 0) ve henüz padding verilmediyse:
+                if (loc[1] < statusBarH / 2 && rootView.paddingTop < statusBarH / 2) {
+                    applyTopBottomSafePadding(activity, rootView, statusBarH, 0)
+                    if (extraInsetTarget != null) {
+                        applyTopBottomSafePadding(activity, extraInsetTarget, statusBarH, 0)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun applyTopBottomSafePadding(activity: Activity, view: View, insetTop: Int, insetBottom: Int) {
+        val loc = IntArray(2)
+        view.getLocationOnScreen(loc)
+        val statusBarH = insetTop.coerceAtLeast(getStatusBarHeightPx(activity))
+        // Eğer DecorView zaten view'u status bar'ın altına itmişse (loc[1] >= statusBarH), ekstra üst padding ekleme
+        val neededTop = if (loc[1] >= statusBarH / 2 && loc[1] > 0) 0 else statusBarH
+        if (neededTop > 0 || insetBottom > 0) {
+            view.setPadding(view.paddingLeft, neededTop, view.paddingRight, insetBottom)
         }
     }
 
@@ -186,7 +248,6 @@ object ThemeManager {
             }
             is TextView -> {
                 val cur = view.currentTextColor
-                // Vurgu renklerini (Teal, Turuncu, İndigo, Beyaz) bozmadan koyu/açık metinleri temaya uyarla
                 val isAccent = cur == Color.parseColor("#26A69A") ||
                     cur == Color.parseColor("#008578") ||
                     cur == Color.parseColor("#FF6D00") ||
@@ -195,7 +256,7 @@ object ThemeManager {
                 if (!isAccent) {
                     if (cur == Color.parseColor("#757575") || cur == Color.parseColor("#777777") ||
                         cur == Color.parseColor("#9E9E9E") || cur == Color.parseColor("#B0BEC5") ||
-                        cur == Color.parseColor("#B8C4CC")
+                        cur == Color.parseColor("#B8C4CC") || cur == Color.parseColor("#C8D2D8")
                     ) {
                         view.setTextColor(secondary)
                     } else if (cur == Color.parseColor("#212121") || cur == Color.parseColor("#202020") ||
@@ -209,7 +270,6 @@ object ThemeManager {
             is ViewGroup -> {
                 for (i in 0 until view.childCount) {
                     val child = view.getChildAt(i)
-                    // Koyu araç çubuklarını (#212121, #2C2C2C, #3F51B5) atla
                     val idName = try {
                         if (child.id != View.NO_ID) context.resources.getResourceEntryName(child.id) else ""
                     } catch (_: Exception) {

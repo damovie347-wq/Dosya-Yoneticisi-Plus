@@ -72,7 +72,7 @@
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="Görünüm ve Sırala"
             android:padding="10dp"
-            android:src="@drawable/ic_sort_white" />
+            android:src="@drawable/ic_ab_view_settings" />
 
         <ImageButton
             android:id="@+id/btnExplorerMore"

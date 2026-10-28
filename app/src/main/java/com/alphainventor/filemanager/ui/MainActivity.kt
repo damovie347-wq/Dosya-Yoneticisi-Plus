@@ -707,7 +707,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun applyCurrentTheme() {
-        ThemeManager.applyWindowColors(this, binding.mainContentRoot, binding.toolbarMain)
+        ThemeManager.applyWindowColors(this, binding.mainContentRoot, binding.toolbarMain, binding.drawerContainer)
         binding.drawerContainer.setBackgroundColor(ThemeManager.getSurfaceColor(this))
         binding.drawerHeaderTabs.setBackgroundColor(ThemeManager.getCardColor(this))
         updateDrawerTabIndicators()

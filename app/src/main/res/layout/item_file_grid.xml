@@ -6,12 +6,13 @@
     android:background="?attr/selectableItemBackground"
     android:gravity="center_horizontal"
     android:orientation="vertical"
-    android:padding="4dp">
+    android:padding="2dp">
 
-    <FrameLayout
+    <com.alphainventor.filemanager.widget.SquareFrameLayout
+        android:id="@+id/flGridThumbContainer"
         android:layout_width="match_parent"
-        android:layout_height="112dp"
-        android:background="#F2F2F2">
+        android:layout_height="wrap_content"
+        android:background="#000000">
 
         <ImageView
             android:id="@+id/ivGridThumb"
@@ -21,23 +22,37 @@
 
         <ImageView
             android:id="@+id/ivGridPlayOverlay"
-            android:layout_width="36dp"
-            android:layout_height="36dp"
+            android:layout_width="34dp"
+            android:layout_height="34dp"
             android:layout_gravity="center"
             android:src="@drawable/ic_gallery_play"
             android:visibility="gone" />
-    </FrameLayout>
+
+        <!-- Orijinal file_media_grid_item.xml sağ alt klasör türü rozeti (Kamera, Video, İndirilenler, Klasör) -->
+        <ImageView
+            android:id="@+id/ivGridCategoryBadge"
+            android:layout_width="22dp"
+            android:layout_height="22dp"
+            android:layout_gravity="bottom|end"
+            android:layout_margin="2dp"
+            android:background="@drawable/bg_folder_type_s_shape"
+            android:padding="2dp"
+            android:scaleType="fitCenter"
+            android:visibility="gone" />
+    </com.alphainventor.filemanager.widget.SquareFrameLayout>
 
     <TextView
         android:id="@+id/tvGridFileName"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
+        android:layout_marginTop="3dp"
+        android:layout_marginBottom="4dp"
         android:ellipsize="end"
-        android:gravity="center"
-        android:maxLines="2"
-        android:minLines="1"
+        android:gravity="center_horizontal"
+        android:maxLines="1"
+        android:singleLine="true"
+        android:textAlignment="center"
         android:textColor="#000000"
-        android:textSize="13sp" />
+        android:textSize="12.5sp" />
 
 </LinearLayout>

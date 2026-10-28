@@ -10,11 +10,11 @@
         android:layout_width="match_parent"
         android:layout_height="56dp"
         android:background="@color/toolbar_dark"
+        android:elevation="4dp"
         android:gravity="center_vertical"
         android:orientation="horizontal"
         android:paddingStart="6dp"
-        android:paddingEnd="8dp"
-        android:elevation="4dp">
+        android:paddingEnd="8dp">
 
         <ImageButton
             android:id="@+id/btnNetworkBack"
@@ -34,132 +34,211 @@
             android:textStyle="bold" />
     </LinearLayout>
 
-    <FrameLayout
+    <ScrollView
         android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:padding="20dp">
+        android:layout_height="match_parent">
 
-        <!-- Videodaki (01:33) Turkuaz Çerçeveli Kart -->
+        <!-- Orijinal fragment_server.xml (Video 3 00:20 - 00:28): 312dp genişliğinde İnce Turkuaz Çerçeveli Kart -->
         <LinearLayout
             android:id="@+id/networkCard"
-            android:layout_width="320dp"
+            android:layout_width="312dp"
             android:layout_height="wrap_content"
             android:layout_gravity="top|center_horizontal"
-            android:layout_marginTop="12dp"
+            android:layout_marginTop="16dp"
             android:background="@drawable/bg_network_card"
             android:gravity="center_horizontal"
-            android:orientation="vertical"
-            android:padding="22dp">
+            android:orientation="vertical">
 
-            <CheckBox
-                android:id="@+id/cbRandomPassword"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:buttonTint="@color/accent_teal"
-                android:text="Rastgele şifre"
-                android:textColor="@color/text_secondary_light"
-                android:textSize="13sp" />
-
-            <LinearLayout
+            <!-- ÜST BÖLÜM (minHeight=215dp): Başlatmadan Önce Ayar Formu, Başlatıldıktan Sonra FTP Bilgileri -->
+            <FrameLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:gravity="center"
-                android:orientation="horizontal">
+                android:minHeight="215dp"
+                android:padding="18dp">
 
-                <TextView
-                    android:layout_width="wrap_content"
+                <!-- 1. DURUM: Hizmet Durdurulmuşken Görünen Ayar Formu (Video 3 00:20) -->
+                <LinearLayout
+                    android:id="@+id/llFtpSetupForm"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="Bağlantı Noktası "
-                    android:textColor="@color/text_secondary_light"
-                    android:textSize="13sp" />
+                    android:layout_gravity="center"
+                    android:gravity="center_horizontal"
+                    android:orientation="vertical">
 
-                <EditText
-                    android:id="@+id/etFtpPort"
-                    android:layout_width="80dp"
+                    <CheckBox
+                        android:id="@+id/cbRandomPassword"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:buttonTint="@color/accent_teal"
+                        android:text="Rastgele şifre"
+                        android:textColor="@color/text_secondary_light"
+                        android:textSize="13.5sp" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:gravity="center"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:layout_width="115dp"
+                            android:layout_height="wrap_content"
+                            android:gravity="end"
+                            android:paddingEnd="8dp"
+                            android:text="Bağlantı Noktası"
+                            android:textColor="@color/text_secondary_light"
+                            android:textSize="13.5sp" />
+
+                        <EditText
+                            android:id="@+id/etFtpPort"
+                            android:layout_width="110dp"
+                            android:layout_height="wrap_content"
+                            android:gravity="center"
+                            android:inputType="number"
+                            android:maxLength="5"
+                            android:text="7552"
+                            android:textColor="@color/text_primary_light"
+                            android:textSize="15sp" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:gravity="center"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:layout_width="115dp"
+                            android:layout_height="wrap_content"
+                            android:gravity="end"
+                            android:paddingEnd="8dp"
+                            android:text="Şifre"
+                            android:textColor="@color/text_secondary_light"
+                            android:textSize="13.5sp" />
+
+                        <EditText
+                            android:id="@+id/etFtpPassword"
+                            android:layout_width="110dp"
+                            android:layout_height="wrap_content"
+                            android:gravity="center"
+                            android:inputType="textVisiblePassword"
+                            android:maxLength="12"
+                            android:text="123"
+                            android:textColor="@color/text_primary_light"
+                            android:textSize="15sp" />
+                    </LinearLayout>
+
+                    <CheckBox
+                        android:id="@+id/cbShowHiddenFtp"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:buttonTint="@color/accent_teal"
+                        android:checked="true"
+                        android:text="Gizli dosyaları göster"
+                        android:textColor="@color/text_secondary_light"
+                        android:textSize="13.5sp" />
+                </LinearLayout>
+
+                <!-- 2. DURUM: Hizmet Çalışırken Görünen Bilgi Paneli (Video 3 00:23 - 00:28 Mavi Yuvarlak İçi) -->
+                <LinearLayout
+                    android:id="@+id/llFtpRunningInfo"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:gravity="center"
-                    android:inputType="number"
-                    android:text="7552"
-                    android:textColor="@color/text_primary_light"
-                    android:textSize="15sp" />
-            </LinearLayout>
+                    android:layout_gravity="center"
+                    android:gravity="center_horizontal"
+                    android:orientation="vertical"
+                    android:visibility="gone">
 
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:gravity="center"
-                android:orientation="horizontal">
+                    <TextView
+                        android:id="@+id/tvFtpUrlBox"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginBottom="12dp"
+                        android:gravity="center"
+                        android:text="ftp://192.168.1.92:7552"
+                        android:textColor="#008578"
+                        android:textSize="21sp"
+                        android:textStyle="bold" />
 
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Şifre "
-                    android:textColor="@color/text_secondary_light"
-                    android:textSize="13sp" />
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center"
+                        android:text="Kullanıcı adı"
+                        android:textColor="@color/text_secondary_light"
+                        android:textSize="13sp" />
 
-                <EditText
-                    android:id="@+id/etFtpPassword"
-                    android:layout_width="110dp"
-                    android:layout_height="wrap_content"
-                    android:gravity="center"
-                    android:inputType="textVisiblePassword"
-                    android:text="123"
-                    android:textColor="@color/text_primary_light"
-                    android:textSize="15sp" />
-            </LinearLayout>
+                    <TextView
+                        android:id="@+id/tvFtpRunningUser"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginBottom="6dp"
+                        android:gravity="center"
+                        android:text="pc"
+                        android:textColor="#008578"
+                        android:textSize="19sp"
+                        android:textStyle="bold" />
 
-            <CheckBox
-                android:id="@+id/cbShowHiddenFtp"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
-                android:buttonTint="@color/accent_teal"
-                android:checked="true"
-                android:text="Gizli dosyaları göster"
-                android:textColor="@color/text_secondary_light"
-                android:textSize="13sp" />
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center"
+                        android:text="Şifre"
+                        android:textColor="@color/text_secondary_light"
+                        android:textSize="13sp" />
 
+                    <TextView
+                        android:id="@+id/tvFtpRunningPass"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center"
+                        android:text="123"
+                        android:textColor="#008578"
+                        android:textSize="19sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+            </FrameLayout>
+
+            <!-- Orta Ayırıcı Çizgi -->
             <View
+                android:id="@+id/dividerFtpCard"
                 android:layout_width="match_parent"
                 android:layout_height="1dp"
-                android:layout_marginTop="12dp"
-                android:layout_marginBottom="14dp"
-                android:background="@color/divider_light" />
+                android:background="#80008578" />
 
-            <TextView
-                android:id="@+id/tvFtpStatusInfo"
+            <!-- ALT BÖLÜM (minHeight=120dp): Durum Açıklaması ve BAŞLAT / HİZMETİ DURDUR Butonu -->
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:gravity="center"
-                android:text="Başka bir cihazdan dosyalara erişmek için hizmeti başlatın."
-                android:textColor="@color/text_primary_light"
-                android:textSize="15sp"
-                android:textStyle="bold" />
+                android:minHeight="120dp"
+                android:orientation="vertical"
+                android:padding="16dp">
 
-            <TextView
-                android:id="@+id/tvFtpUrlBox"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:gravity="center"
-                android:text="ftp://192.168.1.100:7552"
-                android:textColor="@color/accent_teal"
-                android:textSize="16sp"
-                android:textStyle="bold"
-                android:visibility="gone" />
+                <TextView
+                    android:id="@+id/tvFtpStatusInfo"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center"
+                    android:text="Başka bir cihazdan dosyalara erişmek için hizmeti başlatın."
+                    android:textColor="@color/text_primary_light"
+                    android:textSize="17sp"
+                    android:textStyle="bold" />
 
-            <Button
-                android:id="@+id/btnToggleFtpServer"
-                android:layout_width="150dp"
-                android:layout_height="42dp"
-                android:layout_marginTop="16dp"
-                android:backgroundTint="@color/accent_teal"
-                android:text="BAŞLAT"
-                android:textColor="#FFFFFF"
-                android:textSize="14sp"
-                android:textStyle="bold" />
+                <Button
+                    android:id="@+id/btnToggleFtpServer"
+                    android:layout_width="160dp"
+                    android:layout_height="42dp"
+                    android:layout_marginTop="14dp"
+                    android:backgroundTint="#008578"
+                    android:text="BAŞLAT"
+                    android:textColor="#FFFFFF"
+                    android:textSize="13.5sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
         </LinearLayout>
-    </FrameLayout>
+    </ScrollView>
 </LinearLayout>

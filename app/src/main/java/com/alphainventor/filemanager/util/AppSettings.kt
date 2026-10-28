@@ -8,13 +8,32 @@ object AppSettings {
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
 
+    // 0: Ad, 1: Boyut, 2: Tarih, 3: Tür, 4: Sıralama yok, 5: Çekim Tarihi
     var sortBy: Int
-        get() = prefs(FileManagerApp.instance).getInt("sort_by", 0)
+        get() = prefs(FileManagerApp.instance).getInt("sort_by", 2)
         set(v) = prefs(FileManagerApp.instance).edit().putInt("sort_by", v).apply()
 
     var sortAscending: Boolean
-        get() = prefs(FileManagerApp.instance).getBoolean("sort_ascending", true)
+        get() = prefs(FileManagerApp.instance).getBoolean("sort_ascending", false)
         set(v) = prefs(FileManagerApp.instance).edit().putBoolean("sort_ascending", v).apply()
+
+    // 0: Liste, 1: Izgara (Kare), 2: Kompakt/Detaylı Liste
+    var viewTypeMode: Int
+        get() = prefs(FileManagerApp.instance).getInt("view_type_mode", 0)
+        set(v) = prefs(FileManagerApp.instance).edit().putInt("view_type_mode", v).apply()
+
+    // 0: Normal/Küçük Simge, 1: Büyük Simge
+    var iconSizeMode: Int
+        get() = prefs(FileManagerApp.instance).getInt("icon_size_mode", 0)
+        set(v) = prefs(FileManagerApp.instance).edit().putInt("icon_size_mode", v).apply()
+
+    var applyViewToAllFolders: Boolean
+        get() = prefs(FileManagerApp.instance).getBoolean("apply_view_to_all", false)
+        set(v) = prefs(FileManagerApp.instance).edit().putBoolean("apply_view_to_all", v).apply()
+
+    var showThumbnails: Boolean
+        get() = prefs(FileManagerApp.instance).getBoolean("show_thumbnails", true)
+        set(v) = prefs(FileManagerApp.instance).edit().putBoolean("show_thumbnails", v).apply()
 
     var useInternalImageViewer: Boolean
         get() = prefs(FileManagerApp.instance).getBoolean("use_internal_image_viewer", true)

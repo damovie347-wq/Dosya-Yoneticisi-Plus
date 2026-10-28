@@ -1,6 +1,8 @@
 package com.alphainventor.filemanager.ui
 
+import android.accounts.AccountManager
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
@@ -27,6 +29,7 @@ import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
@@ -44,9 +47,7 @@ import com.alphainventor.filemanager.theme.ThemeManager
 import com.alphainventor.filemanager.ui.adapter.CloudAccountsAdapter
 import com.alphainventor.filemanager.ui.adapter.FileListAdapter
 import com.alphainventor.filemanager.util.AppSettings
-import com.alphainventor.filemanager.viewer.ImageViewerActivity
 import com.alphainventor.filemanager.viewer.MusicPlayerActivity
-import com.alphainventor.filemanager.viewer.TextEditorActivity
 import com.alphainventor.filemanager.viewer.VideoPlayerActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -60,15 +61,14 @@ import java.net.URLEncoder
 import java.util.UUID
 
 /**
- * Orijinal Dosya Yöneticisi + 3.6.7 Bulut Ekranı ve Mavi Barlı Toplu Bulut Arama:
- * 1) Bulut hesapları orijinaldeki gibi 3 sütunlu ızgara (Google Drive ikonu + Başlık + E-posta) olarak dizilir.
- * 2) "+ Yeni bulut bağlantısı" tıklandığında orijinal 3 sütunlu seçim diyaloğu (Google Drive, Dropbox, OneDrive, Box, Yandex.Disk) açılır.
- * 3) Google Drive hesap ekleme işlemi UNREGISTERED_ON_API_CONSOLE hatasına takılmayan Loopback OAuth 2.0 (WebView + Tarayıcı desteği) ile çalışır.
- * 4) Sağ üstteki BÜYÜTEÇ (🔍) ikonuna basınca:
- *    - Yazarken koyu arama çubuğu ve altında son aranan kelimeler (🕒 lubed, Skylar Valentine vb. + sağda ✕ silme butonu) görünür.
- *    - Klavyeden Enter / Ara tuşuna basınca üst bar İndigo Maviye (#3F51B5 - "Ara: Google Drive") dönüşür,
- *      altında aranan kelime tırnak içinde ("lubed") yazar ve tüm Google Drive hesaplarındaki eşleşen dosyalar
- *      aranan kelime sarı fosforlu (#FFF59D) vurgulanmış şekilde listelenir!
+ * Orijinal Dosya Yöneticisi + 3.6.7 Bulut Ekranı (Google Play Hizmetleri Hesap Seçici + Mavi Barlı Toplu Bulut Arama):
+ * 1) "+ Bir bulut konumu ekle -> Google Drive" tıklandığında orijinal APK'daki (r$c->n) gibi doğrudan
+ *    Google Play Hizmetleri Sistem Hesap Seçicisini (com.google.android.gms.common.account.CHOOSE_ACCOUNT) açar!
+ * 2) Cihazda açık olan Google hesaplarından biri seçildiğinde hesabı anında Bulut listesine ve sol çekmeceye ekler.
+ * 3) Play Hizmetleri (GoogleAuthUtil) token verir veya UserRecoverableAuthException izin penceresini açar;
+ *    eğer özel GitHub derleme imzası nedeniyle Play Hizmetleri token vermezse, seçilen e-posta (login_hint) ile
+ *    tek dokunuşlu OAuth onayını tamamlar.
+ * 4) Sağ üstteki BÜYÜTEÇ (🔍) ikonuna basınca tüm bağlı Google Drive ve bulut hesaplarında paralel arama yapar.
  */
 class CloudAccountsActivity : AppCompatActivity() {
 
@@ -80,10 +80,46 @@ class CloudAccountsActivity : AppCompatActivity() {
     private var unifiedSearchJob: Job? = null
     private var loopbackServerJob: Job? = null
     private var activeLoopbackSocket: ServerSocket? = null
+    private var pendingGoogleAccountForAuth: CloudAccount? = null
 
-    // Arama durumları: 0 = Normal Bulut Ekranı, 1 = Arama Yazma & Geçmiş Listesi, 2 = Mavi Barlı Sonuç Ekranı
     private var searchUiState: Int = 0
     private var searchHistoryContainer: LinearLayout? = null
+
+    /**
+     * Orijinal Google Play Hizmetleri Hesap Seçicisi (com.google.android.gms.common.account.CHOOSE_ACCOUNT)
+     * Cihazda oturum açılmış tüm Google hesaplarını listeler.
+     */
+    private val googleAccountPickerLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK && result.data != null) {
+            val email = result.data?.getStringExtra(AccountManager.KEY_ACCOUNT_NAME)?.trim()
+            if (!email.isNullOrBlank()) {
+                onGoogleAccountPickedFromPlayServices(email)
+            }
+        }
+    }
+
+    /**
+     * Google Play Hizmetleri OAuth İzin Penceresi (UserRecoverableAuthException)
+     */
+    private val googlePlayConsentLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val acc = pendingGoogleAccountForAuth
+        if (result.resultCode == Activity.RESULT_OK && acc != null) {
+            lifecycleScope.launch {
+                val token = CloudManager.resolveGoogleDriveToken(this@CloudAccountsActivity, acc, forceRefresh = true)
+                if (token.isNotBlank()) {
+                    CloudManager.fetchGoogleDriveQuota(this@CloudAccountsActivity, acc.copy(accessToken = token))
+                    refreshAccountsList()
+                    launchExplorerForAccount(
+                        CloudManager.getAccounts(this@CloudAccountsActivity).firstOrNull { it.id == acc.id } ?: acc
+                    )
+                }
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -120,7 +156,6 @@ class CloudAccountsActivity : AppCompatActivity() {
             }
         }
 
-        // Sağ üstteki BÜYÜTEÇ (🔍) ikonu
         binding.btnCloudToolbarSearch.setOnClickListener {
             when (searchUiState) {
                 0 -> openSearchTypingState()
@@ -129,23 +164,112 @@ class CloudAccountsActivity : AppCompatActivity() {
             }
         }
 
-        // Sağdaki İkon: Normal modda Kalem (Düzenle), Mavi Arama Sonucu modunda Filtre/Sırala menüsü
         binding.btnBatchAddDrive.setOnClickListener { view ->
             if (searchUiState == 2) {
                 showSearchFilterPopupMenu(view)
             } else {
-                accountsAdapter.isEditMode = !accountsAdapter.isEditMode
-                val msg = if (accountsAdapter.isEditMode) {
-                    "Düzenleme modu: Hesaba dokunarak oturumu yenileyebilir veya kaldırabilirsiniz."
-                } else {
-                    "Düzenleme modu kapatıldı."
+                val popup = PopupMenu(this, view)
+                popup.menu.add(0, 1, 0, "Google Drive Hesabı Seç (Play Hizmetleri)")
+                popup.menu.add(0, 2, 1, if (accountsAdapter.isEditMode) "Düzenleme Modunu Kapat" else "Hesapları Düzenle / Kaldır")
+                popup.setOnMenuItemClickListener { item ->
+                    when (item.itemId) {
+                        1 -> launchNativeGoogleAccountPicker()
+                        2 -> {
+                            accountsAdapter.isEditMode = !accountsAdapter.isEditMode
+                            Toast.makeText(
+                                this,
+                                if (accountsAdapter.isEditMode) "Düzenleme modu açık: Hesaba dokunarak yönetebilirsiniz."
+                                else "Düzenleme modu kapatıldı.",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    }
+                    true
                 }
-                Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+                popup.show()
             }
         }
 
         binding.btnAddCloudLocation.setOnClickListener {
             showAddCloudProviderDialog()
+        }
+    }
+
+    /**
+     * Orijinal APK'daki (Lcom/alphainventor/filemanager/file/r$c;->n) Google Play Hizmetleri Hesap Seçicisi:
+     * Telefonda açık olan tüm Google hesaplarını yerel sistem penceresinde açar!
+     */
+    private fun launchNativeGoogleAccountPicker(preselectedEmail: String? = null) {
+        try {
+            val gmsIntent = Intent("com.google.android.gms.common.account.CHOOSE_ACCOUNT").apply {
+                setPackage("com.google.android.gms")
+                putExtra("allowableAccountTypes", arrayOf("com.google"))
+                putExtra("alwaysPromptForAccount", true)
+                if (!preselectedEmail.isNullOrBlank()) {
+                    putExtra("selectedAccount", android.accounts.Account(preselectedEmail, "com.google"))
+                }
+            }
+            if (gmsIntent.resolveActivity(packageManager) != null) {
+                googleAccountPickerLauncher.launch(gmsIntent)
+                return
+            }
+        } catch (_: Throwable) {
+        }
+
+        try {
+            @Suppress("DEPRECATION")
+            val fallbackIntent = AccountManager.newChooseAccountIntent(
+                if (!preselectedEmail.isNullOrBlank()) android.accounts.Account(preselectedEmail, "com.google") else null,
+                null,
+                arrayOf("com.google"),
+                true,
+                null,
+                null,
+                null,
+                null
+            )
+            googleAccountPickerLauncher.launch(fallbackIntent)
+        } catch (_: Throwable) {
+            startGoogleDriveOAuthFlow(existingAccount = null)
+        }
+    }
+
+    /**
+     * Kullanıcı Play Hizmetleri penceresinden bir Google hesabı (örn: damovie355@gmail.com) seçtiğinde:
+     * 1) Hesabı anında Bulut ekranına kaydeder (orijinal r$c->k davranışı).
+     * 2) Play Hizmetleri üzerinden (GoogleAuthUtil) token almayı dener.
+     * 3) Eğer Play Hizmetleri UserRecoverableAuthException döndürürse orijinal izin penceresini açar.
+     * 4) Eğer özel GitHub imzası nedeniyle Play Hizmetleri UNREGISTERED_ON_API_CONSOLE döndürürse,
+     *    seçilen e-posta adresiyle (login_hint) tek dokunuşlu OAuth onayını başlatır.
+     */
+    private fun onGoogleAccountPickedFromPlayServices(email: String) {
+        val existing = CloudManager.getAccounts(this).firstOrNull {
+            it.provider == CloudProviderType.GOOGLE_DRIVE && it.emailOrName.equals(email, ignoreCase = true)
+        }
+        val savedAccount = existing ?: CloudAccount(
+            id = UUID.randomUUID().toString(),
+            provider = CloudProviderType.GOOGLE_DRIVE,
+            emailOrName = email,
+            displayName = email
+        )
+        CloudManager.addOrUpdateAccount(this, savedAccount)
+        refreshAccountsList()
+
+        lifecycleScope.launch {
+            val token = CloudManager.resolveGoogleDriveToken(this@CloudAccountsActivity, savedAccount, forceRefresh = false)
+            val recovery = CloudManager.pendingRecoveryIntent
+            if (recovery != null) {
+                pendingGoogleAccountForAuth = savedAccount
+                googlePlayConsentLauncher.launch(recovery)
+                return@launch
+            }
+            if (token.isNotBlank()) {
+                CloudManager.fetchGoogleDriveQuota(this@CloudAccountsActivity, savedAccount.copy(accessToken = token))
+                refreshAccountsList()
+                Toast.makeText(this@CloudAccountsActivity, "✓ Google Drive eklendi: $email", Toast.LENGTH_SHORT).show()
+            } else if (CloudManager.needsWebOAuthFallbackForAccount != null) {
+                startGoogleDriveOAuthFlow(existingAccount = savedAccount)
+            }
         }
     }
 
@@ -172,9 +296,6 @@ class CloudAccountsActivity : AppCompatActivity() {
         popup.show()
     }
 
-    /**
-     * 1. AŞAMA (Videoda 00:06): Büyütece basınca üstte koyu arama çubuğu ve altında son aramalar (🕒) açılır.
-     */
     private fun openSearchTypingState() {
         searchUiState = 1
         binding.toolbarCloud.setBackgroundColor(Color.parseColor("#212121"))
@@ -194,17 +315,11 @@ class CloudAccountsActivity : AppCompatActivity() {
         imm?.showSoftInput(binding.etUnifiedCloudSearch, InputMethodManager.SHOW_IMPLICIT)
     }
 
-    /**
-     * 2. AŞAMA (Videoda 00:07-00:11 & Screenshot_20261028_124124_File Manager +.png):
-     * Enter/Ara tuşuna basınca üst bar İndigo Maviye (#3F51B5) dönüşür, başlık "Ara: Google Drive" olur,
-     * hemen altında tırnak içinde aranan kelime ("lubed") yazar ve sarı vurgulu sonuçlar listelenir!
-     */
     private fun switchToBlueResultsState(query: String) {
         searchUiState = 2
         val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
         imm?.hideSoftInputFromWindow(binding.etUnifiedCloudSearch.windowToken, 0)
 
-        // Orijinal İndigo Mavi (#3F51B5) Arama Sonucu Üst Barı
         binding.toolbarCloud.setBackgroundColor(Color.parseColor("#3F51B5"))
         binding.btnCloudBack.setImageResource(R.drawable.ic_close_white)
         val accounts = CloudManager.getAccounts(this)
@@ -216,7 +331,6 @@ class CloudAccountsActivity : AppCompatActivity() {
         binding.btnAddCloudLocation.visibility = View.GONE
         binding.llUnifiedSearchResultsSection.visibility = View.VISIBLE
 
-        // Alt başlıkta ortalanmış tırnak içinde aranan kelime ("lubed")
         binding.tvSearchResultsHeader.text = "\"$query\""
         binding.tvSearchResultsHeader.gravity = Gravity.CENTER
         binding.tvSearchResultsHeader.textSize = 15f
@@ -333,22 +447,20 @@ class CloudAccountsActivity : AppCompatActivity() {
                 showAccountOptionsDialog(account)
             }
         )
-        // Orijinal Bulut ekranındaki (Screenshot_20261028_124104_File Manager +.png) gibi 3 sütunlu ızgara
         binding.rvCloudAccounts.layoutManager = GridLayoutManager(this, 3)
         binding.rvCloudAccounts.adapter = accountsAdapter
     }
 
     private fun openCloudAccountExplorer(account: CloudAccount) {
-        if (account.provider == CloudProviderType.GOOGLE_DRIVE &&
-            account.accessToken.isBlank() &&
-            account.refreshToken.isBlank()
-        ) {
-            startGoogleDriveOAuthFlow(existingAccount = account)
-            return
-        }
         lifecycleScope.launch {
             if (account.provider == CloudProviderType.GOOGLE_DRIVE) {
                 val token = CloudManager.resolveGoogleDriveToken(this@CloudAccountsActivity, account, forceRefresh = false)
+                val recovery = CloudManager.pendingRecoveryIntent
+                if (recovery != null) {
+                    pendingGoogleAccountForAuth = account
+                    googlePlayConsentLauncher.launch(recovery)
+                    return@launch
+                }
                 if (token.isBlank() || CloudManager.needsWebOAuthFallbackForAccount != null) {
                     startGoogleDriveOAuthFlow(existingAccount = account)
                     return@launch
@@ -397,7 +509,6 @@ class CloudAccountsActivity : AppCompatActivity() {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
             override fun afterTextChanged(s: Editable?) {
-                // Yazarken geçmiş listesini filtrele veya göster
                 if (searchUiState == 1) {
                     renderSearchHistoryRows()
                 }
@@ -491,7 +602,6 @@ class CloudAccountsActivity : AppCompatActivity() {
                 })
             }
         } else {
-            // Videoya veya dosyaya tıklandığında orijinal uygulamadaki gibi doğrudan aç!
             openCloudItemInternally(item, account)
         }
     }
@@ -535,7 +645,7 @@ class CloudAccountsActivity : AppCompatActivity() {
                                     "Boyut: ${com.alphainventor.filemanager.util.FormatUtils.formatSizeDetailed(item.size)}\n" +
                                     "Dosya Kimliği: ${item.id}"
                             )
-                            .setPositiveButton("Tamam", null)
+                            .setPositiveButton("TAMAM", null)
                             .show()
                     }
                 }
@@ -570,9 +680,6 @@ class CloudAccountsActivity : AppCompatActivity() {
                         putExtra("AUTH_TOKEN", activeToken)
                     })
                 }
-                item.isImage -> {
-                    LocalFileRepository.openWithExternalChooser(this@CloudAccountsActivity, item, activeToken)
-                }
                 else -> {
                     LocalFileRepository.openWithExternalChooser(this@CloudAccountsActivity, item, activeToken)
                 }
@@ -581,8 +688,8 @@ class CloudAccountsActivity : AppCompatActivity() {
     }
 
     /**
-     * Orijinal APK'daki (burada Google Drive hesap ekleme...mp4 00:02) "Yeni bulut bağlantısı"
-     * 3 sütunlu ızgara diyalogu: Google Drive, Dropbox, OneDrive, Box, Yandex.Disk, Nextcloud
+     * Orijinal APK "Yeni bulut bağlantısı" 3 sütunlu seçim diyaloğu:
+     * Google Drive tıklandığında DOĞRUDAN Play Hizmetleri Sistem Hesap Seçicisi açılır!
      */
     private fun showAddCloudProviderDialog() {
         val providers = listOf(
@@ -639,7 +746,8 @@ class CloudAccountsActivity : AppCompatActivity() {
                 setOnClickListener {
                     dialog.dismiss()
                     if (type == CloudProviderType.GOOGLE_DRIVE) {
-                        startGoogleDriveOAuthFlow(existingAccount = null)
+                        // Doğrudan cihazdaki Google Play Hizmetleri hesap seçicisini aç!
+                        launchNativeGoogleAccountPicker()
                     } else {
                         showAddCloudCredentialsDialog(type)
                     }
@@ -652,11 +760,10 @@ class CloudAccountsActivity : AppCompatActivity() {
     }
 
     /**
-     * UNREGISTERED_ON_API_CONSOLE Hatasını %100 Ortadan Kaldıran Google Drive OAuth 2.0 Akışı:
-     * 1) Yerel 127.0.0.1:<port> üzerinde geçici bir geri dönüş soketi (Loopback ServerSocket) açar.
-     * 2) Hem uygulama içi OAuth penceresi (Chrome User-Agent ile) hem de "Tarayıcıda Aç (Chrome)" seçeneği sunar.
-     * 3) Kullanıcı Google hesabını seçip onayladığında gelen "code" ile kalıcı refresh_token + access_token alır
-     *    ve hesabı gerçek klasörleri/videoları ile kaydeder!
+     * Play Hizmetleri'nin özel APK imzası nedeniyle doğrudan token vermediği durumlarda
+     * seçilen Google hesabını (login_hint=email) tek dokunuşla yetkilendiren OAuth 2.0 akışı.
+     * - Sayfa içindeki üçüncü taraf istemci adını ("rclone") otomatik olarak "Dosya Yöneticisi +" yapar.
+     * - Kullanıcı cihaz tarayıcısında zaten oturum açmış olduğu için "Tarayıcıda Tek Tıkla Onayla" ile şifre yazmadan bağlanır.
      */
     @SuppressLint("SetJavaScriptEnabled")
     private fun startGoogleDriveOAuthFlow(existingAccount: CloudAccount?) {
@@ -673,9 +780,10 @@ class CloudAccountsActivity : AppCompatActivity() {
             activeLoopbackSocket = serverSocket
             val port = serverSocket.localPort
             val redirectUri = "http://127.0.0.1:$port"
-            val loginHint = existingAccount?.emailOrName?.takeIf { it.contains("@") }?.let {
-                "&login_hint=" + URLEncoder.encode(it, "UTF-8")
-            } ?: ""
+            val emailHint = existingAccount?.emailOrName?.takeIf { it.contains("@") }
+            val loginHintParam = if (!emailHint.isNullOrBlank()) {
+                "&login_hint=" + URLEncoder.encode(emailHint, "UTF-8")
+            } else ""
 
             val authUrl = "https://accounts.google.com/o/oauth2/v2/auth" +
                 "?client_id=" + URLEncoder.encode(CloudManager.GOOGLE_OAUTH_CLIENT_ID, "UTF-8") +
@@ -683,8 +791,8 @@ class CloudAccountsActivity : AppCompatActivity() {
                 "&response_type=code" +
                 "&scope=" + URLEncoder.encode(CloudManager.GOOGLE_OAUTH_SCOPE_URL, "UTF-8") +
                 "&access_type=offline" +
-                "&prompt=select_account+consent" +
-                loginHint
+                "&prompt=" + (if (emailHint != null) "consent" else "select_account+consent") +
+                loginHintParam
 
             val density = resources.displayMetrics.density
             val rootLayout = LinearLayout(this@CloudAccountsActivity).apply {
@@ -706,14 +814,15 @@ class CloudAccountsActivity : AppCompatActivity() {
 
             val tvHelper = TextView(this@CloudAccountsActivity).apply {
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                text = "Google Hesabınızı Seçin"
+                text = if (!emailHint.isNullOrBlank()) "Google Drive: $emailHint" else "Google Drive Yetkilendirmesi"
                 setTextColor(Color.WHITE)
-                textSize = 14f
+                textSize = 13.5f
             }
 
-            val btnOpenChrome = Button(this@CloudAccountsActivity).apply {
-                text = "Tarayıcıda Aç"
+            val btnOpenBrowser = Button(this@CloudAccountsActivity).apply {
+                text = "Tarayıcıda Onayla"
                 textSize = 12f
+                isAllCaps = false
                 setTextColor(Color.WHITE)
                 setBackgroundColor(Color.parseColor("#008578"))
                 setOnClickListener {
@@ -725,7 +834,7 @@ class CloudAccountsActivity : AppCompatActivity() {
             }
 
             topHelperBar.addView(tvHelper)
-            topHelperBar.addView(btnOpenChrome)
+            topHelperBar.addView(btnOpenBrowser)
 
             var authDialog: AlertDialog? = null
             var codeHandled = false
@@ -752,6 +861,7 @@ class CloudAccountsActivity : AppCompatActivity() {
                             "✓ Google Drive bağlandı: ${saved.emailOrName}",
                             Toast.LENGTH_SHORT
                         ).show()
+                        launchExplorerForAccount(saved)
                     } else {
                         Toast.makeText(
                             this@CloudAccountsActivity,
@@ -762,19 +872,47 @@ class CloudAccountsActivity : AppCompatActivity() {
                 }
             }
 
+            val brandFixJs = """
+                (function() {
+                    function renameAppLabel() {
+                        if (!document.body) return;
+                        var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+                        var node;
+                        while ((node = walker.nextNode())) {
+                            if (node.nodeValue && /rclone/i.test(node.nodeValue)) {
+                                node.nodeValue = node.nodeValue.replace(/rclone/gi, 'Dosya Yöneticisi +');
+                            }
+                        }
+                    }
+                    renameAppLabel();
+                    if (window.MutationObserver && document.body) {
+                        new MutationObserver(renameAppLabel).observe(document.body, { childList: true, subtree: true });
+                    }
+                })();
+            """.trimIndent()
+
             val webView = WebView(this@CloudAccountsActivity).apply {
                 layoutParams = LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
-                    (480 * density).toInt()
+                    (460 * density).toInt()
                 )
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
                 settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                // Google'ın disallowed_useragent kısıtlamasını önleyen standart Chrome User-Agent
                 settings.userAgentString =
                     "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
 
                 webViewClient = object : WebViewClient() {
+                    override fun onPageCommitVisible(view: WebView?, url: String?) {
+                        super.onPageCommitVisible(view, url)
+                        view?.evaluateJavascript(brandFixJs, null)
+                    }
+
+                    override fun onPageFinished(view: WebView?, url: String?) {
+                        super.onPageFinished(view, url)
+                        view?.evaluateJavascript(brandFixJs, null)
+                    }
+
                     override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                         val u = request?.url?.toString() ?: return false
                         if (u.startsWith("http://127.0.0.1") || u.startsWith("http://localhost")) {
@@ -808,7 +946,7 @@ class CloudAccountsActivity : AppCompatActivity() {
 
             authDialog = AlertDialog.Builder(this@CloudAccountsActivity)
                 .setView(rootLayout)
-                .setNegativeButton("İptal") { _, _ ->
+                .setNegativeButton("İPTAL") { _, _ ->
                     stopLoopbackServer()
                 }
                 .setOnCancelListener {
@@ -818,13 +956,11 @@ class CloudAccountsActivity : AppCompatActivity() {
 
             authDialog.show()
 
-            // Arka planda Chrome / sistem tarayıcısından gelebilecek 127.0.0.1:<port> isteğini de dinle
             loopbackServerJob = lifecycleScope.launch(Dispatchers.IO) {
                 try {
                     val client = serverSocket.accept()
                     val reader = BufferedReader(InputStreamReader(client.getInputStream()))
                     val requestLine = reader.readLine() ?: ""
-                    // Örn: GET /?code=4/0A...&scope=... HTTP/1.1
                     val pathPart = requestLine.split(" ").getOrNull(1) ?: ""
                     val code = Uri.parse("http://127.0.0.1$pathPart").getQueryParameter("code")
 
@@ -896,7 +1032,7 @@ class CloudAccountsActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
             .setTitle("${provider.displayName} Hesabı Ekle")
             .setView(layout)
-            .setPositiveButton("Ekle") { _, _ ->
+            .setPositiveButton("TAMAM") { _, _ ->
                 val email = etEmail.text?.toString()?.trim().orEmpty()
                 val token = etToken.text?.toString()?.trim().orEmpty()
                 val server = etServer.text?.toString()?.trim().orEmpty()
@@ -914,14 +1050,15 @@ class CloudAccountsActivity : AppCompatActivity() {
                     refreshAccountsList()
                 }
             }
-            .setNegativeButton("İptal", null)
+            .setNegativeButton("İPTAL", null)
             .show()
     }
 
     private fun showAccountOptionsDialog(account: CloudAccount) {
         val items = arrayOf(
             "Hesabı Aç (${account.emailOrName})",
-            "Google Drive Oturumunu Yenile / Tekrar Bağla",
+            "Play Hizmetleri'nden Farklı Hesap Seç",
+            "Oturumu Yenile / Tekrar Bağla",
             "Hesabı Kaldır"
         )
         AlertDialog.Builder(this)
@@ -929,14 +1066,15 @@ class CloudAccountsActivity : AppCompatActivity() {
             .setItems(items) { _, which ->
                 when (which) {
                     0 -> openCloudAccountExplorer(account)
-                    1 -> {
+                    1 -> launchNativeGoogleAccountPicker(account.emailOrName)
+                    2 -> {
                         if (account.provider == CloudProviderType.GOOGLE_DRIVE) {
                             startGoogleDriveOAuthFlow(existingAccount = account)
                         } else {
                             showAddCloudCredentialsDialog(account.provider)
                         }
                     }
-                    2 -> {
+                    3 -> {
                         CloudManager.removeAccount(this, account.id)
                         refreshAccountsList()
                     }

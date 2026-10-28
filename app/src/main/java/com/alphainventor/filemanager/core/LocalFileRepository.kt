@@ -3,6 +3,7 @@ package com.alphainventor.filemanager.core
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
+import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -14,6 +15,7 @@ import com.alphainventor.filemanager.model.FileItem
 import com.alphainventor.filemanager.model.FileSourceType
 import com.alphainventor.filemanager.util.AppSettings
 import com.alphainventor.filemanager.util.FormatUtils
+import com.alphainventor.filemanager.util.ThumbnailCacheManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -22,6 +24,7 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.security.MessageDigest
+import java.util.Locale
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
@@ -71,7 +74,11 @@ data class StorageAnalysisReport(
     val imagesCount: Int = 0,
     val audioCount: Int = 0,
     val videosCount: Int = 0,
-    val docsCount: Int = 0
+    val docsCount: Int = 0,
+    val folderSizeMap: Map<String, Long> = emptyMap(),
+    val folderItemCountMap: Map<String, Int> = emptyMap(),
+    val cacheBytes: Long = 0L,
+    val cachedApps: List<Pair<InstalledAppItem, Long>> = emptyList()
 )
 
 data class InstalledAppItem(
@@ -121,6 +128,9 @@ object LocalFileRepository {
     @Volatile
     var clipboardIsMove: Boolean = false
 
+    @Volatile
+    var lastAnalysisReport: StorageAnalysisReport? = null
+
     fun getStorageOverviewForPath(path: String): StorageOverview {
         return try {
             val stat = StatFs(path)
@@ -138,10 +148,6 @@ object LocalFileRepository {
 
     fun getMainStorageOverview(): StorageOverview = getStorageOverview()
 
-    /**
-     * Cihaza takılı harici SD kartları (/storage/XXXX-XXXX) ve USB OTG bellekleri tespit eder.
-     * Videodaki (00:01 ve 00:06) "SD kart (101 GB / 128 GB)" kutucuğunu birebir oluşturur.
-     */
     fun getRemovableStorageVolumes(context: Context): List<RemovableStorageVolume> {
         val volumes = LinkedHashMap<String, RemovableStorageVolume>()
         val mainPath = try {
@@ -150,7 +156,6 @@ object LocalFileRepository {
             rootStorageDir.absolutePath
         }
 
-        // 1. context.getExternalFilesDirs(null) üzerinden tüm harici depolama köklerini bul
         try {
             val extDirs = context.getExternalFilesDirs(null)
             for (dir in extDirs) {
@@ -174,7 +179,6 @@ object LocalFileRepository {
         } catch (_: Throwable) {
         }
 
-        // 2. Android 7+ StorageManager.storageVolumes kontrolü
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             try {
                 val sm = context.getSystemService(Context.STORAGE_SERVICE) as? StorageManager
@@ -210,7 +214,6 @@ object LocalFileRepository {
             }
         }
 
-        // 3. /storage/ altındaki XXXX-XXXX formatlı SD kart klasörlerini kontrol et
         try {
             val storageRoot = File("/storage")
             val children = storageRoot.listFiles().orEmpty()
@@ -234,10 +237,6 @@ object LocalFileRepository {
         return volumes.values.toList()
     }
 
-    /**
-     * Ana ekrandaki Görüntüler, Ses, Videolar, Belgeler ve Yeni Dosyalar sayılarını ve boyutlarını
-     * MediaStore üzerinden milisaniyeler içinde (<100ms) hesaplar.
-     */
     suspend fun getQuickDashboardStats(context: Context): QuickDashboardStats = withContext(Dispatchers.IO) {
         val imgStat = queryMediaStoreStat(context, MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
         val audStat = queryMediaStoreStat(context, MediaStore.Audio.Media.EXTERNAL_CONTENT_URI)
@@ -245,7 +244,6 @@ object LocalFileRepository {
         val docStat = queryDocumentsStat(context)
         val newStat = queryNewFilesStat(context)
 
-        // Eğer MediaStore izin veya indeks gecikmesi nedeniyle 0 döndürdüyse hızlı dizin taramasıyla tamamla
         if (imgStat.count == 0 && vidStat.count == 0 && audStat.count == 0) {
             return@withContext scanQuickFallbackStats(context)
         }
@@ -263,10 +261,14 @@ object LocalFileRepository {
         var count = 0
         var bytes = 0L
         try {
-            val projection = arrayOf(MediaStore.MediaColumns.SIZE)
+            val projection = arrayOf(MediaStore.MediaColumns.SIZE, MediaStore.MediaColumns.DATA)
             context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
                 val sizeCol = cursor.getColumnIndex(MediaStore.MediaColumns.SIZE)
+                val dataCol = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
                 while (cursor.moveToNext()) {
+                    val p = if (dataCol >= 0) cursor.getString(dataCol) ?: "" else ""
+                    if (p.contains("/.DosyaYoneticisiPlus_RecycleBin")) continue
+                    if (!AppSettings.showHiddenFiles && isHiddenPath(p)) continue
                     count++
                     if (sizeCol >= 0) {
                         bytes += cursor.getLong(sizeCol).coerceAtLeast(0L)
@@ -278,6 +280,14 @@ object LocalFileRepository {
         return CategoryStat(bytes, count)
     }
 
+    private fun isHiddenPath(path: String): Boolean {
+        val parts = path.split('/')
+        for (part in parts) {
+            if (part.startsWith(".") && part.length > 1) return true
+        }
+        return false
+    }
+
     private fun queryDocumentsStat(context: Context): CategoryStat {
         var count = 0
         var bytes = 0L
@@ -285,8 +295,7 @@ object LocalFileRepository {
             val uri = MediaStore.Files.getContentUri("external")
             val projection = arrayOf(
                 MediaStore.Files.FileColumns.DATA,
-                MediaStore.Files.FileColumns.SIZE,
-                MediaStore.Files.FileColumns.MIME_TYPE
+                MediaStore.Files.FileColumns.SIZE
             )
             val selection = "${MediaStore.Files.FileColumns.MEDIA_TYPE} != ${MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE} AND " +
                 "${MediaStore.Files.FileColumns.MEDIA_TYPE} != ${MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO} AND " +
@@ -391,9 +400,10 @@ object LocalFileRepository {
     }
 
     /**
-     * Orijinal APK'daki (videoda 00:44 - 00:47) Videolar / Görüntüler / Ses / Belgeler
+     * Orijinal APK'daki (Video 1 & Video 2) Videolar / Görüntüler / Ses / Belgeler
      * klasör gruplama (Folder Bucket) mantığı:
-     * Kategorideki tüm dosyaları bulundukları klasöre göre gruplar (örn: InstaEclipse (64), Twitter (22), Movies (6), Download (3)).
+     * - AppSettings.showHiddenFiles == true olduğunda gizli klasörleri (.aa, .Private, .statuses, .thumbnails, .!%#@$) de tarar!
+     * - AppSettings.sortBy ve AppSettings.sortAscending ayarlarına göre klasör kutucuklarını sıralar.
      */
     suspend fun getCategoryFolderBuckets(context: Context, category: String): List<FileItem> = withContext(Dispatchers.IO) {
         val allCategoryFiles = getCategoryFiles(context, category)
@@ -428,16 +438,17 @@ object LocalFileRepository {
             )
         }
 
-        buckets.sortedWith(
-            compareByDescending<FileItem> { it.childCount }
-                .thenByDescending { it.lastModified }
-        )
+        val sortBy = AppSettings.sortBy
+        val asc = AppSettings.sortAscending
+        when (sortBy) {
+            0 -> if (asc) buckets.sortedBy { it.name.lowercase(Locale("tr", "TR")) } else buckets.sortedByDescending { it.name.lowercase(Locale("tr", "TR")) }
+            1 -> if (asc) buckets.sortedBy { it.childCount } else buckets.sortedByDescending { it.childCount }
+            2, 5 -> if (asc) buckets.sortedBy { it.lastModified } else buckets.sortedByDescending { it.lastModified }
+            4 -> buckets
+            else -> buckets.sortedWith(compareByDescending<FileItem> { it.childCount }.thenByDescending { it.lastModified })
+        }
     }
 
-    /**
-     * Bir medya kategorisi klasörüne (örn. Videolar -> InstaEclipse veya Movies) tıklandığında
-     * o klasörün içindeki ilgili medya dosyalarını listeler.
-     */
     suspend fun getCategoryFilesInBucket(
         context: Context,
         category: String,
@@ -451,12 +462,12 @@ object LocalFileRepository {
         if (filtered.isNotEmpty()) {
             return@withContext sortFileItems(filtered, AppSettings.sortBy, AppSettings.sortAscending)
         }
-        // Doğrudan klasör içini filtrele
         val dir = File(bucketFolderPath)
         val raw = dir.listFiles().orEmpty()
         val list = ArrayList<FileItem>()
         for (f in raw) {
             if (f.isDirectory) continue
+            if (!AppSettings.showHiddenFiles && f.name.startsWith(".")) continue
             val fi = FileItem(
                 id = f.absolutePath,
                 name = f.name,
@@ -479,13 +490,28 @@ object LocalFileRepository {
     }
 
     suspend fun getCategoryFiles(context: Context? = null, category: String): List<FileItem> = withContext(Dispatchers.IO) {
+        val showHidden = AppSettings.showHiddenFiles
+        val merged = LinkedHashMap<String, FileItem>()
+
         if (context != null) {
             val mediaItems = queryMediaStoreCategoryItems(context, category)
-            if (mediaItems.isNotEmpty()) {
-                return@withContext mediaItems
+            for (item in mediaItems) {
+                merged[item.path] = item
             }
         }
-        scanCategoryFiles(context, category)
+
+        // Eğer "Gizli dosyaları göster" açıksa (veya MediaStore boşsa), MediaStore'un atladığı
+        // gizli klasörleri (.aa, .Private, .statuses, .thumbnails, .!%#@$) ve .nomedia klasörlerini de tara!
+        if (showHidden || merged.isEmpty()) {
+            val scanned = scanCategoryFiles(context, category, onlyHiddenOrNomedia = merged.isNotEmpty() && showHidden)
+            for (item in scanned) {
+                if (!merged.containsKey(item.path)) {
+                    merged[item.path] = item
+                }
+            }
+        }
+
+        sortFileItems(merged.values.toList(), AppSettings.sortBy, AppSettings.sortAscending)
     }
 
     private fun queryMediaStoreCategoryItems(context: Context, category: String): List<FileItem> {
@@ -516,10 +542,10 @@ object LocalFileRepository {
 
                         while (cursor.moveToNext()) {
                             val path = if (dataCol >= 0) cursor.getString(dataCol) ?: "" else ""
-                            if (path.isBlank()) continue
+                            if (path.isBlank() || path.contains("/.DosyaYoneticisiPlus_RecycleBin")) continue
+                            if (!showHidden && isHiddenPath(path)) continue
                             val file = File(path)
                             if (!file.exists()) continue
-                            if (!showHidden && file.name.startsWith(".")) continue
                             val name = if (nameCol >= 0) cursor.getString(nameCol) ?: file.name else file.name
                             val size = if (sizeCol >= 0) cursor.getLong(sizeCol).coerceAtLeast(file.length()) else file.length()
                             val modSec = if (dateCol >= 0) cursor.getLong(dateCol) else 0L
@@ -541,6 +567,48 @@ object LocalFileRepository {
                             )
                         }
                     }
+
+                    // Gizli dosyalar açıksa MediaStore.Files tablosundaki indekslenmiş diğer medya dosyalarını da ekle
+                    if (showHidden) {
+                        val filesUri = MediaStore.Files.getContentUri("external")
+                        context.contentResolver.query(filesUri, projection, null, null, sortOrder)?.use { cursor ->
+                            val dataCol = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
+                            val sizeCol = cursor.getColumnIndex(MediaStore.MediaColumns.SIZE)
+                            val dateCol = cursor.getColumnIndex(MediaStore.MediaColumns.DATE_MODIFIED)
+                            val mimeCol = cursor.getColumnIndex(MediaStore.MediaColumns.MIME_TYPE)
+                            while (cursor.moveToNext()) {
+                                val path = if (dataCol >= 0) cursor.getString(dataCol) ?: "" else ""
+                                if (path.isBlank() || path.contains("/.DosyaYoneticisiPlus_RecycleBin")) continue
+                                val ext = path.substringAfterLast('.', "").lowercase()
+                                val matchesCat = when (category) {
+                                    "VIDEOS" -> ext in FileItem.VIDEO_EXTENSIONS
+                                    "IMAGES" -> ext in FileItem.IMAGE_EXTENSIONS
+                                    "AUDIO" -> ext in FileItem.AUDIO_EXTENSIONS
+                                    else -> false
+                                }
+                                if (!matchesCat) continue
+                                val file = File(path)
+                                if (!file.exists() || file.isDirectory) continue
+                                val size = if (sizeCol >= 0) cursor.getLong(sizeCol).coerceAtLeast(file.length()) else file.length()
+                                val modSec = if (dateCol >= 0) cursor.getLong(dateCol) else 0L
+                                val lastMod = if (modSec > 0L) modSec * 1000L else file.lastModified()
+                                val mime = if (mimeCol >= 0) cursor.getString(mimeCol) ?: "" else ""
+                                list.add(
+                                    FileItem(
+                                        id = path,
+                                        name = file.name,
+                                        path = path,
+                                        isDirectory = false,
+                                        size = size,
+                                        lastModified = lastMod,
+                                        mimeType = mime,
+                                        sourceType = FileSourceType.LOCAL,
+                                        parentId = file.parentFile?.name ?: "Ana bellek"
+                                    )
+                                )
+                            }
+                        }
+                    }
                 }
                 "DOCUMENTS" -> {
                     val uri = MediaStore.Files.getContentUri("external")
@@ -559,12 +627,12 @@ object LocalFileRepository {
 
                         while (cursor.moveToNext()) {
                             val path = if (dataCol >= 0) cursor.getString(dataCol) ?: "" else ""
-                            if (path.isBlank()) continue
+                            if (path.isBlank() || path.contains("/.DosyaYoneticisiPlus_RecycleBin")) continue
+                            if (!showHidden && isHiddenPath(path)) continue
                             val ext = path.substringAfterLast('.', "").lowercase()
                             if (ext !in FileItem.DOC_EXTENSIONS) continue
                             val file = File(path)
                             if (!file.exists() || file.isDirectory) continue
-                            if (!showHidden && file.name.startsWith(".")) continue
                             val size = if (sizeCol >= 0) cursor.getLong(sizeCol).coerceAtLeast(file.length()) else file.length()
                             val modSec = if (dateCol >= 0) cursor.getLong(dateCol) else 0L
                             val lastMod = if (modSec > 0L) modSec * 1000L else file.lastModified()
@@ -606,10 +674,10 @@ object LocalFileRepository {
 
                         while (cursor.moveToNext()) {
                             val path = if (dataCol >= 0) cursor.getString(dataCol) ?: "" else ""
-                            if (path.isBlank() || path.contains("/Android/data") || path.contains("/Android/obb")) continue
+                            if (path.isBlank() || path.contains("/Android/data") || path.contains("/Android/obb") || path.contains("/.DosyaYoneticisiPlus_RecycleBin")) continue
+                            if (!showHidden && isHiddenPath(path)) continue
                             val file = File(path)
                             if (!file.exists() || file.isDirectory) continue
-                            if (!showHidden && file.name.startsWith(".")) continue
                             val size = if (sizeCol >= 0) cursor.getLong(sizeCol).coerceAtLeast(file.length()) else file.length()
                             val modSec = if (dateCol >= 0) cursor.getLong(dateCol) else 0L
                             val lastMod = if (modSec > 0L) modSec * 1000L else file.lastModified()
@@ -644,8 +712,9 @@ object LocalFileRepository {
         sortBy: Int = AppSettings.sortBy
     ): List<FileItem> = withContext(Dispatchers.IO) {
         val rawFiles = dir.listFiles() ?: return@withContext emptyList()
-        val items = mutableListOf<FileItem>()
+        val items = ArrayList<FileItem>(rawFiles.size)
         for (f in rawFiles) {
+            if (f.name == ".DosyaYoneticisiPlus_RecycleBin") continue
             if (!showHidden && f.name.startsWith(".")) continue
             val isDir = f.isDirectory
             val childCount = if (isDir) {
@@ -667,21 +736,27 @@ object LocalFileRepository {
         sortFileItems(items, sortBy, AppSettings.sortAscending)
     }
 
-    private fun sortFileItems(items: List<FileItem>, sortBy: Int, asc: Boolean): List<FileItem> {
+    fun sortFileItems(items: List<FileItem>, sortBy: Int, asc: Boolean): List<FileItem> {
+        if (sortBy == 4) return items
         return items.sortedWith(
             compareByDescending<FileItem> { it.isDirectory }.let { comp ->
                 when (sortBy) {
                     1 -> if (asc) comp.thenBy { it.size } else comp.thenByDescending { it.size }
-                    2 -> if (asc) comp.thenBy { it.lastModified } else comp.thenByDescending { it.lastModified }
-                    3 -> comp.thenBy { it.extension }.thenBy { it.name.lowercase() }
-                    else -> if (asc) comp.thenBy { it.name.lowercase() } else comp.thenByDescending { it.name.lowercase() }
+                    2, 5 -> if (asc) comp.thenBy { it.lastModified } else comp.thenByDescending { it.lastModified }
+                    3 -> if (asc) comp.thenBy { it.extension }.thenBy { it.name.lowercase(Locale("tr", "TR")) }
+                    else comp.thenByDescending { it.extension }.thenByDescending { it.name.lowercase(Locale("tr", "TR")) }
+                    else -> if (asc) comp.thenBy { it.name.lowercase(Locale("tr", "TR")) } else comp.thenByDescending { it.name.lowercase(Locale("tr", "TR")) }
                 }
             }
         )
     }
 
-    suspend fun scanCategoryFiles(context: Context? = null, category: String): List<FileItem> = withContext(Dispatchers.IO) {
-        val results = mutableListOf<FileItem>()
+    suspend fun scanCategoryFiles(
+        context: Context? = null,
+        category: String,
+        onlyHiddenOrNomedia: Boolean = false
+    ): List<FileItem> = withContext(Dispatchers.IO) {
+        val results = ArrayList<FileItem>()
         val roots = mutableListOf(rootStorageDir)
         if (context != null) {
             getRemovableStorageVolumes(context).forEach { vol ->
@@ -691,15 +766,24 @@ object LocalFileRepository {
         }
         val showHidden = AppSettings.showHiddenFiles
 
-        fun walkDir(dir: File, depth: Int) {
+        fun walkDir(dir: File, depth: Int, insideHiddenOrNomedia: Boolean) {
             if (depth > 6) return
+            val dirName = dir.name
+            if (dirName == ".DosyaYoneticisiPlus_RecycleBin") return
+            val absPath = dir.absolutePath
+            if (absPath.contains("/Android/data") || absPath.contains("/Android/obb")) return
+
             val children = dir.listFiles() ?: return
+            val hasNomedia = children.any { it.name.equals(".nomedia", ignoreCase = true) }
+            val currentHiddenCtx = insideHiddenOrNomedia || dirName.startsWith(".") || hasNomedia
+
             for (f in children) {
+                if (f.name == ".DosyaYoneticisiPlus_RecycleBin") continue
                 if (!showHidden && f.name.startsWith(".")) continue
-                if (f.absolutePath.contains("/Android/data") || f.absolutePath.contains("/Android/obb")) continue
                 if (f.isDirectory) {
-                    walkDir(f, depth + 1)
+                    walkDir(f, depth + 1, currentHiddenCtx || f.name.startsWith("."))
                 } else {
+                    if (onlyHiddenOrNomedia && !currentHiddenCtx && !f.name.startsWith(".")) continue
                     val item = FileItem(
                         id = f.absolutePath,
                         name = f.name,
@@ -729,15 +813,16 @@ object LocalFileRepository {
             }
         }
 
-        for (r in roots) walkDir(r, 0)
+        for (r in roots) walkDir(r, 0, false)
         results.sortedByDescending { it.lastModified }
     }
 
     /**
      * Hızlı (<1 saniye) ve İnteraktif Bellek Analizi Motoru:
-     * - MediaStore + paralel klasör boyutu toplama ile saniyeler içinde tamamlanır.
-     * - En çok yer kaplayan klasörleri (topFolders), büyük dosyaları (largeFiles),
-     *   yinelenen dosyaları (duplicateGroups) ve yüklü uygulamaları (installedApps) döndürür.
+     * - MediaStore + dizin ağacı üzerinden tüm alt klasörlerin (Download -> 1DMP -> Compressed -> Alien vb.)
+     *   rekürsif toplam boyutlarını tek geçişte hesaplar (folderSizeMap).
+     * - Kullanıcı "DAHA FAZLA" veya herhangi bir klasöre tıkladığında 0 ms gecikmeyle alt klasörleri
+     *   boyut yüzdesine ve yeşil/mavi çubuklara göre sıralı açar!
      */
     suspend fun analyzeStorage(
         context: Context? = null,
@@ -759,12 +844,61 @@ object LocalFileRepository {
         var vidCount = 0
         var docCount = 0
 
-        val folderBytesMap = HashMap<String, Long>()
-        val folderCountMap = HashMap<String, Int>()
+        // Tüm klasör derinlikleri için rekürsif toplam boyut haritası
+        val allDirBytesMap = HashMap<String, Long>()
+        val topFolderCountMap = HashMap<String, Int>()
         val sizeMap = HashMap<Long, MutableList<File>>()
         val largeList = ArrayList<FileItem>()
+        val seenFilePaths = HashSet<String>()
 
-        var scannedViaMediaStore = false
+        fun accumulateFileIntoDirs(filePath: String, fileLen: Long, lastMod: Long) {
+            if (!seenFilePaths.add(filePath)) return
+            val fileName = filePath.substringAfterLast('/')
+            val parentDir = filePath.substringBeforeLast('/', "")
+            val item = FileItem(
+                id = filePath,
+                name = fileName,
+                path = filePath,
+                isDirectory = false,
+                size = fileLen,
+                lastModified = lastMod,
+                parentId = filePath.removePrefix("$cleanRoot/").substringBeforeLast('/', "")
+            )
+
+            when {
+                item.isImageFile() -> { imgBytes += fileLen; imgCount++ }
+                item.isAudioFile() -> { audBytes += fileLen; audCount++ }
+                item.isVideoFile() -> { vidBytes += fileLen; vidCount++ }
+                item.isDocumentFile() -> { docBytes += fileLen; docCount++ }
+                item.isArchiveFile() || item.isApk -> arcBytes += fileLen
+                else -> othBytes += fileLen
+            }
+
+            // Dosyanın bulunduğu klasörden cleanRoot'a kadar tüm üst klasörlere boyutu ekle
+            var curDir = parentDir
+            while (curDir.length >= cleanRoot.length && curDir.startsWith(cleanRoot)) {
+                allDirBytesMap[curDir] = (allDirBytesMap[curDir] ?: 0L) + fileLen
+                if (curDir == cleanRoot) break
+                val nextSlash = curDir.lastIndexOf('/')
+                if (nextSlash <= 0) break
+                curDir = curDir.substring(0, nextSlash)
+            }
+
+            val rel = filePath.removePrefix("$cleanRoot/")
+            val topSeg = rel.substringBefore('/', "")
+            if (topSeg.isNotEmpty()) {
+                val topFolderPath = "$cleanRoot/$topSeg"
+                topFolderCountMap[topFolderPath] = (topFolderCountMap[topFolderPath] ?: 0) + 1
+            }
+
+            if (fileLen >= 10L * 1024 * 1024) {
+                largeList.add(item)
+            }
+            if (fileLen >= 512 * 1024L) {
+                sizeMap.getOrPut(fileLen) { ArrayList() }.add(File(filePath))
+            }
+        }
+
         if (context != null) {
             try {
                 val uri = MediaStore.Files.getContentUri("external")
@@ -785,115 +919,58 @@ object LocalFileRepository {
                         if (path.isBlank() || path.contains("/.DosyaYoneticisiPlus_RecycleBin")) continue
                         val len = if (sizeCol >= 0) cursor.getLong(sizeCol).coerceAtLeast(0L) else 0L
                         if (len <= 0L) continue
-                        scannedViaMediaStore = true
-
                         val modSec = if (dateCol >= 0) cursor.getLong(dateCol) else 0L
                         val lastMod = if (modSec > 0L) modSec * 1000L else System.currentTimeMillis()
-                        val fileName = path.substringAfterLast('/')
-                        val item = FileItem(
-                            id = path,
-                            name = fileName,
-                            path = path,
-                            isDirectory = false,
-                            size = len,
-                            lastModified = lastMod,
-                            parentId = path.substringBeforeLast('/').substringAfterLast('/')
-                        )
-
-                        when {
-                            item.isImageFile() -> { imgBytes += len; imgCount++ }
-                            item.isAudioFile() -> { audBytes += len; audCount++ }
-                            item.isVideoFile() -> { vidBytes += len; vidCount++ }
-                            item.isDocumentFile() -> { docBytes += len; docCount++ }
-                            item.isArchiveFile() -> arcBytes += len
-                            else -> othBytes += len
-                        }
-
-                        // Üst seviye klasör boyutunu topla (örn: /storage/emulated/0/Download, /storage/emulated/0/DCIM)
-                        val rel = path.removePrefix("$cleanRoot/")
-                        val topFolderSeg = rel.substringBefore('/', "")
-                        if (topFolderSeg.isNotEmpty() && !topFolderSeg.startsWith(".")) {
-                            val topFolderPath = "$cleanRoot/$topFolderSeg"
-                            folderBytesMap[topFolderPath] = (folderBytesMap[topFolderPath] ?: 0L) + len
-                            folderCountMap[topFolderPath] = (folderCountMap[topFolderPath] ?: 0) + 1
-                        }
-
-                        if (len >= 10L * 1024 * 1024) {
-                            largeList.add(item)
-                        }
-                        if (len >= 512 * 1024L) {
-                            sizeMap.getOrPut(len) { ArrayList() }.add(File(path))
-                        }
+                        accumulateFileIntoDirs(path, len, lastMod)
                     }
                 }
             } catch (_: Throwable) {
             }
         }
 
-        // Eğer MediaStore boş döndüyse hızlı sınırlı derinlikli klasör taraması yap
-        if (!scannedViaMediaStore) {
-            fun walkBounded(dir: File, depth: Int, topFolderKey: String) {
-                if (depth > 5) return
-                val list = dir.listFiles() ?: return
-                for (f in list) {
-                    if (f.name.startsWith(".")) continue
-                    val p = f.absolutePath
-                    if (p.contains("/Android/data") || p.contains("/Android/obb")) continue
-                    val currentTop = if (depth == 0 && f.isDirectory) f.absolutePath else topFolderKey
-                    if (f.isDirectory) {
-                        walkBounded(f, depth + 1, currentTop)
-                    } else {
-                        val len = f.length()
-                        val item = FileItem(p, f.name, p, false, len, f.lastModified(), parentId = f.parentFile?.name ?: "")
-                        when {
-                            item.isImageFile() -> { imgBytes += len; imgCount++ }
-                            item.isAudioFile() -> { audBytes += len; audCount++ }
-                            item.isVideoFile() -> { vidBytes += len; vidCount++ }
-                            item.isDocumentFile() -> { docBytes += len; docCount++ }
-                            item.isArchiveFile() -> arcBytes += len
-                            else -> othBytes += len
-                        }
-                        if (currentTop.isNotEmpty()) {
-                            folderBytesMap[currentTop] = (folderBytesMap[currentTop] ?: 0L) + len
-                            folderCountMap[currentTop] = (folderCountMap[currentTop] ?: 0) + 1
-                        }
-                        if (len >= 10L * 1024 * 1024) {
-                            largeList.add(item)
-                        }
-                        if (len >= 512 * 1024L) {
-                            sizeMap.getOrPut(len) { ArrayList() }.add(f)
-                        }
+        // MediaStore'un atladığı klasörleri (.aa, Files, 1DMP vb.) de hızlıca tamamla
+        fun walkSupplement(dir: File, depth: Int) {
+            if (depth > 5) return
+            val list = dir.listFiles() ?: return
+            for (f in list) {
+                if (f.name == ".DosyaYoneticisiPlus_RecycleBin") continue
+                val p = f.absolutePath
+                if (p.contains("/Android/data") || p.contains("/Android/obb")) continue
+                if (f.isDirectory) {
+                    walkSupplement(f, depth + 1)
+                } else {
+                    if (!seenFilePaths.contains(p)) {
+                        accumulateFileIntoDirs(p, f.length(), f.lastModified())
                     }
                 }
             }
-            walkBounded(File(cleanRoot), 0, "")
         }
+        walkSupplement(File(cleanRoot), 0)
 
-        // Ayrıca kök dizindeki tüm görünür klasörlerin listede yer almasını sağla
         val rootDirFile = File(cleanRoot)
+        val topFolders = ArrayList<FileItem>()
         rootDirFile.listFiles()?.forEach { f ->
-            if (f.isDirectory && !f.name.startsWith(".")) {
-                folderBytesMap.putIfAbsent(f.absolutePath, 0L)
-            }
-        }
-
-        val topFolders = folderBytesMap.entries
-            .map { (fPath, totalSz) ->
-                val f = File(fPath)
-                FileItem(
-                    id = fPath,
-                    name = f.name,
-                    path = fPath,
-                    isDirectory = true,
-                    size = totalSz,
-                    lastModified = f.lastModified(),
-                    childCount = folderCountMap[fPath] ?: (f.list()?.size ?: 0),
-                    sourceType = FileSourceType.LOCAL
+            if (f.name == ".DosyaYoneticisiPlus_RecycleBin") return@forEach
+            if (!AppSettings.showHiddenFiles && f.name.startsWith(".")) return@forEach
+            if (f.isDirectory) {
+                val sz = allDirBytesMap[f.absolutePath] ?: 0L
+                val directChildren = f.list()?.count { AppSettings.showHiddenFiles || !it.startsWith(".") } ?: 0
+                topFolders.add(
+                    FileItem(
+                        id = f.absolutePath,
+                        name = f.name,
+                        path = f.absolutePath,
+                        isDirectory = true,
+                        size = sz,
+                        lastModified = f.lastModified(),
+                        childCount = directChildren,
+                        sourceType = FileSourceType.LOCAL
+                    )
                 )
             }
-            .sortedByDescending { it.size }
+        }
+        topFolders.sortByDescending { it.size }
 
-        // Hızlı Yinelenen Dosya Tespiti (En büyük 40 aday boyutu kontrol et, kilitlenmeyi önle)
         val duplicateGroups = ArrayList<List<FileItem>>()
         val candidateEntries = sizeMap.entries
             .filter { it.value.size > 1 }
@@ -930,7 +1007,7 @@ object LocalFileRepository {
         val accounted = imgBytes + audBytes + vidBytes + docBytes + arcBytes + appsBytes
         val computedOthers = (overview.usedBytes - accounted).coerceAtLeast(othBytes)
 
-        StorageAnalysisReport(
+        val report = StorageAnalysisReport(
             rootPath = cleanRoot,
             rootTitle = targetTitle,
             overview = overview,
@@ -943,13 +1020,68 @@ object LocalFileRepository {
             othersBytes = computedOthers,
             topFolders = topFolders,
             duplicateGroups = duplicateGroups.sortedByDescending { it.firstOrNull()?.size ?: 0L },
-            largeFiles = largeList.sortedByDescending { it.size }.take(150),
+            largeFiles = largeList.sortedByDescending { it.size }.take(200),
             installedApps = installedApps,
             imagesCount = imgCount,
             audioCount = audCount,
             videosCount = vidCount,
-            docsCount = docCount
+            docsCount = docCount,
+            folderSizeMap = allDirBytesMap
         )
+        lastAnalysisReport = report
+        report
+    }
+
+    /**
+     * Video 5'teki (00:09 - 00:23) Bellek Analizi Klasör İçi Boyut Gezgini:
+     * Seçilen klasörün içindeki tüm alt klasörleri (rekürsif toplam boyutlarıyla) ve dosyaları
+     * en büyükten en küçüğe doğru sıralar!
+     */
+    suspend fun getFolderSizeDrillDownItems(
+        dirPath: String,
+        report: StorageAnalysisReport
+    ): List<FileItem> = withContext(Dispatchers.IO) {
+        val dir = File(dirPath)
+        val children = dir.listFiles() ?: return@withContext emptyList()
+        val showHidden = AppSettings.showHiddenFiles
+        val items = ArrayList<FileItem>(children.size)
+
+        for (f in children) {
+            if (f.name == ".DosyaYoneticisiPlus_RecycleBin") continue
+            if (!showHidden && f.name.startsWith(".")) continue
+            val isDir = f.isDirectory
+            val totalSize = if (isDir) {
+                report.folderSizeMap[f.absolutePath] ?: computeDirectorySizeBounded(f, 0)
+            } else {
+                f.length()
+            }
+            val directCount = if (isDir) {
+                f.list()?.count { showHidden || !it.startsWith(".") } ?: 0
+            } else 0
+            items.add(
+                FileItem(
+                    id = f.absolutePath,
+                    name = f.name,
+                    path = f.absolutePath,
+                    isDirectory = isDir,
+                    size = totalSize,
+                    lastModified = f.lastModified(),
+                    childCount = directCount,
+                    sourceType = FileSourceType.LOCAL
+                )
+            )
+        }
+        items.sortedWith(compareByDescending<FileItem> { it.size }.thenBy { it.name.lowercase(Locale("tr", "TR")) })
+    }
+
+    private fun computeDirectorySizeBounded(dir: File, depth: Int): Long {
+        if (depth > 4) return 0L
+        val children = dir.listFiles() ?: return 0L
+        var sum = 0L
+        for (c in children) {
+            sum += if (c.isDirectory) computeDirectorySizeBounded(c, depth + 1) else c.length()
+        }
+        return sum
     }
 
     private fun quickPartialHash(file: File): String {
@@ -974,10 +1106,8 @@ object LocalFileRepository {
         if (raw.isNullOrBlank()) {
             val defaults = listOf(
                 DrawerBookmarkEntry("Kamera", File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "Camera").absolutePath, true),
-                DrawerBookmarkEntry("İndirilenler", Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).absolutePath, true),
                 DrawerBookmarkEntry("Filmler", Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES).absolutePath, true),
-                DrawerBookmarkEntry("Müzik", Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC).absolutePath, true),
-                DrawerBookmarkEntry("Resimler", Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES).absolutePath, true)
+                DrawerBookmarkEntry("Müzik", Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC).absolutePath, true)
             )
             saveBookmarks(context, defaults)
             return defaults
@@ -1097,15 +1227,29 @@ object LocalFileRepository {
         val showSys = includeSystem || includeSystemApps
         val pm = context.packageManager
         val packages = pm.getInstalledPackages(0)
-        val list = mutableListOf<InstalledAppItem>()
+        val list = ArrayList<InstalledAppItem>(packages.size)
         for (pkg in packages) {
             val appInfo = pkg.applicationInfo ?: continue
             val isSys = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0 &&
                 (appInfo.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) == 0
             if (!showSys && isSys) continue
             val label = pm.getApplicationLabel(appInfo).toString()
-            val apkFile = File(appInfo.sourceDir ?: "")
-            val size = if (apkFile.exists()) apkFile.length() else 0L
+            var size = 0L
+            val baseApk = File(appInfo.sourceDir ?: "")
+            if (baseApk.exists()) size += baseApk.length()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                appInfo.splitSourceDirs?.forEach { splitPath ->
+                    val sf = File(splitPath)
+                    if (sf.exists()) size += sf.length()
+                }
+            }
+            // İkonu arka planda önbelleğe al (120Hz sıfır takılmalı kaydırma için)
+            if (ThumbnailCacheManager.getCachedAppIcon(pkg.packageName) == null) {
+                try {
+                    ThumbnailCacheManager.putCachedAppIcon(pkg.packageName, pm.getApplicationIcon(appInfo))
+                } catch (_: Throwable) {
+                }
+            }
             list.add(
                 InstalledAppItem(
                     packageName = pkg.packageName,
@@ -1137,10 +1281,22 @@ object LocalFileRepository {
         }
     }
 
-    fun renameFile(file: File, newName: String): Boolean {
+    fun renameFile(file: File, newName: String, context: Context? = null): Boolean {
         return try {
             val dest = File(file.parentFile ?: rootStorageDir, newName)
-            file.renameTo(dest)
+            val ok = file.renameTo(dest)
+            if (ok && context != null) {
+                try {
+                    MediaScannerConnection.scanFile(
+                        context.applicationContext,
+                        arrayOf(file.absolutePath, dest.absolutePath),
+                        null,
+                        null
+                    )
+                } catch (_: Throwable) {
+                }
+            }
+            ok
         } catch (_: Throwable) {
             false
         }
@@ -1160,17 +1316,33 @@ object LocalFileRepository {
         count
     }
 
-    suspend fun deleteFiles(items: List<FileItem>, moveToRecycleBin: Boolean = AppSettings.useRecycleBin): Int =
-        withContext(Dispatchers.IO) {
-            var count = 0
-            for (item in items) {
-                val f = File(item.path)
-                if (f.exists() && deleteFileOrRecycle(f, moveToRecycleBin)) {
-                    count++
-                }
+    suspend fun deleteFiles(
+        items: List<FileItem>,
+        moveToRecycleBin: Boolean = AppSettings.useRecycleBin,
+        context: Context? = null
+    ): Int = withContext(Dispatchers.IO) {
+        var count = 0
+        val deletedPaths = ArrayList<String>()
+        for (item in items) {
+            val f = File(item.path)
+            if (f.exists() && deleteFileOrRecycle(f, moveToRecycleBin)) {
+                count++
+                deletedPaths.add(f.absolutePath)
             }
-            count
         }
+        if (context != null && deletedPaths.isNotEmpty()) {
+            try {
+                MediaScannerConnection.scanFile(
+                    context.applicationContext,
+                    deletedPaths.toTypedArray(),
+                    null,
+                    null
+                )
+            } catch (_: Throwable) {
+            }
+        }
+        count
+    }
 
     suspend fun copyOrMoveFile(src: File, destDir: File, move: Boolean): Boolean = withContext(Dispatchers.IO) {
         try {

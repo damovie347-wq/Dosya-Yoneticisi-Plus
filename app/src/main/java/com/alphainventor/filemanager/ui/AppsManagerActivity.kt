@@ -1,7 +1,5 @@
 package com.alphainventor.filemanager.ui
 
-import androidx.core.content.ContextCompat
-
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -15,7 +13,9 @@ import android.view.ViewGroup
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.alphainventor.filemanager.R
@@ -25,11 +25,17 @@ import com.alphainventor.filemanager.databinding.ActivityAppsManagerBinding
 import com.alphainventor.filemanager.databinding.ItemFileRowBinding
 import com.alphainventor.filemanager.theme.ThemeManager
 import com.alphainventor.filemanager.util.FormatUtils
+import com.alphainventor.filemanager.util.ThumbnailCacheManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
+/**
+ * 120Hz Yağ Gibi Akıcı Uygulamalar Yöneticisi (İNDİRİLENLER / TÜMÜ):
+ * - Uygulama ikonları ThumbnailCacheManager üzerinden asenkron ve önbellekli yüklenir;
+ *   onBindViewHolder içinde sıfır senkron Binder/disk çağrısı yapılır.
+ */
 class AppsManagerActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityAppsManagerBinding
@@ -45,6 +51,8 @@ class AppsManagerActivity : AppCompatActivity() {
         ThemeManager.applyWindowColors(this, binding.appsRoot, binding.appsToolbar)
 
         binding.rvApps.layoutManager = LinearLayoutManager(this)
+        binding.rvApps.setHasFixedSize(true)
+        binding.rvApps.setItemViewCacheSize(28)
         binding.rvApps.adapter = appsAdapter
 
         binding.btnAppsBack.setOnClickListener { finish() }
@@ -144,12 +152,26 @@ class AppsManagerActivity : AppCompatActivity() {
     }
 
     inner class AppsAdapter : RecyclerView.Adapter<AppsAdapter.VH>() {
-        private val items = mutableListOf<InstalledAppItem>()
+        private val items = ArrayList<InstalledAppItem>()
+
+        init {
+            setHasStableIds(true)
+        }
+
+        override fun getItemId(position: Int): Long = items[position].packageName.hashCode().toLong()
 
         fun submitList(newList: List<InstalledAppItem>) {
+            val diff = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
+                override fun getOldListSize(): Int = items.size
+                override fun getNewListSize(): Int = newList.size
+                override fun areItemsTheSame(oldPos: Int, newPos: Int): Boolean =
+                    items[oldPos].packageName == newList[newPos].packageName
+                override fun areContentsTheSame(oldPos: Int, newPos: Int): Boolean =
+                    items[oldPos] == newList[newPos]
+            })
             items.clear()
             items.addAll(newList)
-            notifyDataSetChanged()
+            diff.dispatchUpdatesTo(this)
         }
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
@@ -165,20 +187,21 @@ class AppsManagerActivity : AppCompatActivity() {
             with(holder.binding) {
                 tvSectionHeader.visibility = View.GONE
                 tvIconBadge.visibility = View.GONE
-                cbSelect.visibility = View.GONE
+                ivPlayOverlay.visibility = View.GONE
+                cbSelect.visibility = View.VISIBLE
+                cbSelect.isChecked = false
 
                 tvFileName.text = item.appName
                 tvFileName.setTextColor(ThemeManager.getPrimaryTextColor(ctx))
                 tvFileSubInfo.text = FormatUtils.formatSizeDetailed(item.apkSizeBytes)
                 tvFileSubInfo.setTextColor(ThemeManager.getSecondaryTextColor(ctx))
                 tvFileDate.text = item.versionName
+                tvFileDate.setTextColor(ThemeManager.getSecondaryTextColor(ctx))
                 rowDivider.setBackgroundColor(ThemeManager.getDividerColor(ctx))
 
-                try {
-                    ivFileIcon.setImageDrawable(packageManager.getApplicationIcon(item.packageName))
-                } catch (_: Throwable) {
-                    ivFileIcon.setImageResource(R.drawable.ic_cat_apps)
-                }
+                // 120Hz sıfır takılmalı önbellekli ikon yükleme
+                ivFileIcon.scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+                ThumbnailCacheManager.loadAppIconAsync(ctx, item.packageName, ivFileIcon, R.drawable.ic_cat_apps)
 
                 fileRowRoot.setOnClickListener { showAppActionsDialog(item) }
             }

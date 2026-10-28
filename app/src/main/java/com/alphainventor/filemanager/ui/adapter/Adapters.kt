@@ -3,6 +3,7 @@ package com.alphainventor.filemanager.ui.adapter
 import android.graphics.Color
 import android.text.SpannableString
 import android.text.Spanned
+import android.text.TextUtils
 import android.text.style.BackgroundColorSpan
 import android.text.style.ForegroundColorSpan
 import android.view.Gravity
@@ -13,6 +14,7 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.RecyclerView
 import com.alphainventor.filemanager.R
 import com.alphainventor.filemanager.databinding.ItemDrawerNavBinding
@@ -21,9 +23,9 @@ import com.alphainventor.filemanager.databinding.ItemFileRowBinding
 import com.alphainventor.filemanager.databinding.ItemHomeGridBinding
 import com.alphainventor.filemanager.model.*
 import com.alphainventor.filemanager.theme.ThemeManager
+import com.alphainventor.filemanager.util.AppSettings
 import com.alphainventor.filemanager.util.FormatUtils
 import com.alphainventor.filemanager.util.ThumbnailCacheManager
-import java.io.File
 
 /**
  * 1. ANA EKRAN KATEGORİ IZGARASI (Orijinal DesktopGridView & desktop2_item.xml birebir karşılığı)
@@ -33,10 +35,16 @@ class HomeGridAdapter(
     private val onClick: (HomeCategoryItem) -> Unit
 ) : RecyclerView.Adapter<HomeGridAdapter.HomeVH>() {
 
+    init {
+        setHasStableIds(true)
+    }
+
     fun updateData(newItems: List<HomeCategoryItem>) {
         items = newItems
         notifyDataSetChanged()
     }
+
+    override fun getItemId(position: Int): Long = items[position].type.ordinal.toLong() + (items[position].customPath.hashCode().toLong() shl 8)
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): HomeVH {
         val binding = ItemHomeGridBinding.inflate(LayoutInflater.from(parent.context), parent, false)
@@ -64,7 +72,6 @@ class HomeGridAdapter(
             tvCategorySubtitle.setTextColor(ThemeManager.getSecondaryTextColor(ctx))
 
             val iconFrame = ivCategoryIcon.parent as? FrameLayout
-            // Orijinal APK'daki (00:01) büyük ve dolgun simge boyutu (74dp)
             val boxSize = (74 * density).toInt()
             iconFrame?.layoutParams = iconFrame?.layoutParams?.apply {
                 width = boxSize
@@ -131,7 +138,6 @@ class HomeGridAdapter(
                 }
             }
 
-            // Ana bellek ve SD kart yatay mavi doluluk çubuğu kontrolü
             var storageBar: android.widget.ProgressBar? = null
             for (i in 0 until root.childCount) {
                 val ch = root.getChildAt(i)
@@ -173,10 +179,7 @@ class HomeGridAdapter(
 }
 
 /**
- * 2. DOSYA, KLASÖR KUTUCUĞU VE ARAMA SONUÇLARI ADAPTER'I
- * - Arama modunda (highlightQuery doluysa) dosya adındaki eşleşen kelimeleri sarı fosforlu (#FFF59D) vurgular.
- * - Medya Kategorilerinde (Videolar, Görüntüler, Ses) Klasör Kutucuklarını ("InstaEclipse (64)", "Movies (6)")
- *   ilk medyanın küçük resmi ve sağ alt kategori rozetiyle gösterir.
+ * 2. DOSYA, 1:1 KARE MEDYA KLASÖR KUTUCUĞU VE ARAMA SONUÇLARI ADAPTER'I (120Hz Optimize)
  */
 class FileListAdapter(
     private val onItemClick: (FileItem) -> Unit,
@@ -207,10 +210,40 @@ class FileListAdapter(
             }
         }
 
+    var isCompactListMode: Boolean = false
+        set(value) {
+            if (field != value) {
+                field = value
+                notifyDataSetChanged()
+            }
+        }
+
+    init {
+        setHasStableIds(true)
+    }
+
+    override fun getItemId(position: Int): Long = items[position].id.hashCode().toLong()
+
     fun submitList(newList: List<FileItem>) {
+        val diff = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
+            override fun getOldListSize(): Int = items.size
+            override fun getNewListSize(): Int = newList.size
+            override fun areItemsTheSame(oldPos: Int, newPos: Int): Boolean =
+                items[oldPos].id == newList[newPos].id
+            override fun areContentsTheSame(oldPos: Int, newPos: Int): Boolean {
+                val o = items[oldPos]
+                val n = newList[newPos]
+                return o.name == n.name &&
+                    o.size == n.size &&
+                    o.lastModified == n.lastModified &&
+                    o.childCount == n.childCount &&
+                    o.firstMediaPreviewPath == n.firstMediaPreviewPath &&
+                    highlightQuery.isEmpty()
+            }
+        })
         items.clear()
         items.addAll(newList)
-        notifyDataSetChanged()
+        diff.dispatchUpdatesTo(this)
     }
 
     fun getCurrentItems(): List<FileItem> = items
@@ -287,6 +320,42 @@ class FileListAdapter(
         return spannable
     }
 
+    /**
+     * Orijinal APK'daki (Söylediğim dosya ayarındaki çıkan panel...jpg & Video 1 00:05) gibi
+     * medya klasörü adını tek satıra sığdırırken sondaki "(8)" / "(6)" sayısını her zaman korur:
+     * Örn: "Alien (Saga) Av1 A5.1 1080p 7RIP" + 7 -> "Alien (Saga) Av1... (7)"
+     */
+    private fun formatMediaBucketSingleLine(folderName: String, count: Int): String {
+        if (count < 0) return folderName
+        val clean = if (folderName.length > 18) {
+            folderName.take(16).trimEnd() + "..."
+        } else {
+            folderName
+        }
+        return "$clean ($count)"
+    }
+
+    /**
+     * Orijinal file_media_grid_item.xml içindeki sağ alt 20dp klasör türü rozet ikonu:
+     * - Screen recordings, Camera, DCIM, mcpro24fps -> v_shape_camera
+     * - Download, 1DM, Seal -> v_shape_download
+     * - Movies, Video, youcut, inshot, RecorderX -> v_shape_video
+     * - Screenshots, Pictures, Instagram, WhatsApp Images -> v_shape_image
+     * - Diğer klasörler -> v_shape_folder_dir
+     */
+    private fun resolveFolderBadgeIcon(item: FileItem): Int {
+        val lower = item.name.lowercase()
+        return when {
+            lower.contains("record") || lower.contains("camera") || lower.contains("dcim") || lower.contains("mcpro") -> R.drawable.v_shape_camera
+            lower.contains("download") || lower.contains("1dm") || lower.contains("seal") || lower.contains("indir") -> R.drawable.v_shape_download
+            lower.contains("movie") || lower.contains("video") || lower.contains("youcut") || lower.contains("inshot") || lower.contains("film") -> R.drawable.v_shape_video
+            lower.contains("screen") || lower.contains("picture") || lower.contains("photo") || lower.contains("image") || lower.contains("whatsapp") -> R.drawable.v_shape_image
+            item.mediaCategoryBadge == "VIDEOS" -> R.drawable.v_shape_folder_dir
+            item.mediaCategoryBadge == "IMAGES" -> R.drawable.v_shape_folder_dir
+            else -> R.drawable.v_shape_folder_dir
+        }
+    }
+
     private fun resolveOriginalFileIcon(item: FileItem): Int {
         if (item.isDirectory) {
             val lower = item.name.lowercase()
@@ -340,15 +409,12 @@ class FileListAdapter(
             tvFileDate.setTextColor(secondaryColor)
 
             val baseSub = if (item.isDirectory) {
-                if (item.childCount >= 0) "${item.childCount} öğe" else "Klasör"
+                if (item.childCount >= 0) "(${item.childCount})" else "Klasör"
             } else {
                 FormatUtils.formatSize(item.size)
             }
 
             if (showAccountOwnerBadge && item.accountEmailOrLabel.isNotBlank()) {
-                // Orijinal Arama Sonucu formatı (Screenshot_20261028_124124_File Manager +.png):
-                // Satır 2: 486 MB
-                // Satır 3: /Klasör_Yolu/ • damovie355@gmail.com
                 tvFileSubInfo.isSingleLine = false
                 tvFileSubInfo.maxLines = 2
                 val folderDisplay = if (item.parentId.isNotBlank() && item.parentId != "root") {
@@ -361,27 +427,37 @@ class FileListAdapter(
             } else {
                 tvFileSubInfo.isSingleLine = true
                 tvFileSubInfo.maxLines = 1
-                tvFileSubInfo.text = baseSub
+                tvFileSubInfo.text = if (item.isDirectory && item.childCount >= 0) "${item.childCount} öğe" else baseSub
                 tvFileSubInfo.setTextColor(secondaryColor)
             }
 
             rowDivider.setBackgroundColor(ThemeManager.getDividerColor(ctx))
 
-            ivFileIcon.tag = item.path
-            ivPlayOverlay.visibility = if (item.isVideo) View.VISIBLE else View.GONE
+            ivPlayOverlay.visibility = if (!item.isDirectory && item.isVideo) View.VISIBLE else View.GONE
 
             val iconRes = resolveOriginalFileIcon(item)
-            ivFileIcon.setImageResource(iconRes)
-
-            if (!item.isDirectory && item.sourceType == FileSourceType.LOCAL) {
-                val f = File(item.path)
-                if (f.exists()) {
-                    if (item.isImage) {
-                        ThumbnailCacheManager.loadImageThumbnail(f, ivFileIcon, iconRes)
-                    } else if (item.isVideo) {
-                        ThumbnailCacheManager.loadVideoThumbnail(f, ivFileIcon, iconRes)
-                    }
-                }
+            if (!item.isDirectory && item.sourceType == FileSourceType.LOCAL && AppSettings.showThumbnails && (item.isImage || item.isVideo)) {
+                ThumbnailCacheManager.loadThumbnailByPath(
+                    path = item.path,
+                    lastModified = item.lastModified,
+                    isVideo = item.isVideo,
+                    imageView = ivFileIcon,
+                    fallbackRes = if (item.isVideo) 0 else iconRes
+                )
+            } else if (item.isDirectory && item.firstMediaPreviewPath.isNotBlank() && AppSettings.showThumbnails) {
+                val previewIsVideo = item.mediaCategoryBadge == "VIDEOS" ||
+                    item.firstMediaPreviewPath.substringAfterLast('.', "").lowercase() in FileItem.VIDEO_EXTENSIONS
+                ThumbnailCacheManager.loadThumbnailByPath(
+                    path = item.firstMediaPreviewPath,
+                    lastModified = item.lastModified,
+                    isVideo = previewIsVideo,
+                    imageView = ivFileIcon,
+                    fallbackRes = iconRes
+                )
+            } else {
+                ivFileIcon.tag = null
+                ivFileIcon.scaleType = ImageView.ScaleType.FIT_CENTER
+                ivFileIcon.setImageResource(iconRes)
             }
 
             val isSelected = selectedIds.contains(item.id)
@@ -410,55 +486,91 @@ class FileListAdapter(
         fun bind(item: FileItem) = with(binding) {
             val ctx = root.context
             val isDark = ThemeManager.isDarkOrAmoled(ctx)
-            val thumbFrame = ivGridThumb.parent as? FrameLayout
-            thumbFrame?.setBackgroundColor(
-                if (isDark) Color.parseColor("#1E1E1E") else Color.parseColor("#F2F2F2")
-            )
+            val isMediaBucket = item.isDirectory && item.mediaCategoryBadge in setOf("VIDEOS", "IMAGES")
 
-            val label = if (item.isDirectory && item.childCount >= 0) {
-                "${item.name} (${item.childCount})"
-            } else {
-                item.name
-            }
             tvGridFileName.setTextColor(ThemeManager.getPrimaryTextColor(ctx))
-            tvGridFileName.text = buildHighlightedText(label, highlightQuery)
 
-            val iconRes = resolveOriginalFileIcon(item)
-            ivGridThumb.tag = item.path
-            ivGridThumb.scaleType = ImageView.ScaleType.CENTER_CROP
-            ivGridThumb.setImageResource(iconRes)
-            ivGridPlayOverlay.visibility = if (item.isVideo) View.VISIBLE else View.GONE
+            if (isMediaBucket) {
+                // Orijinal file_media_grid_item.xml: 1:1 Kare + Sağ alt rozet + Tek satır "Movies (6)"
+                flGridThumbContainer.setBackgroundColor(Color.BLACK)
+                tvGridFileName.maxLines = 1
+                tvGridFileName.minLines = 1
+                tvGridFileName.isSingleLine = true
+                tvGridFileName.ellipsize = TextUtils.TruncateAt.END
+                val formattedLabel = formatMediaBucketSingleLine(item.name, item.childCount)
+                tvGridFileName.text = buildHighlightedText(formattedLabel, highlightQuery)
 
-            if (!item.isDirectory && item.sourceType == FileSourceType.LOCAL) {
-                val f = File(item.path)
-                if (f.exists()) {
-                    if (item.isImage) {
-                        ThumbnailCacheManager.loadImageThumbnail(f, ivGridThumb, iconRes)
-                    } else if (item.isVideo) {
-                        ThumbnailCacheManager.loadVideoThumbnail(f, ivGridThumb, iconRes)
-                    }
-                }
-            } else if (item.isDirectory && item.sourceType == FileSourceType.LOCAL) {
-                val previewFile = if (item.firstMediaPreviewPath.isNotBlank()) {
-                    File(item.firstMediaPreviewPath).takeIf { it.exists() }
+                ivGridPlayOverlay.visibility = View.GONE
+                ivGridCategoryBadge.visibility = View.VISIBLE
+                ivGridCategoryBadge.setImageResource(resolveFolderBadgeIcon(item))
+
+                val previewIsVideo = item.mediaCategoryBadge == "VIDEOS" ||
+                    item.firstMediaPreviewPath.substringAfterLast('.', "").lowercase() in FileItem.VIDEO_EXTENSIONS
+                if (item.firstMediaPreviewPath.isNotBlank() && AppSettings.showThumbnails) {
+                    ThumbnailCacheManager.loadThumbnailByPath(
+                        path = item.firstMediaPreviewPath,
+                        lastModified = item.lastModified,
+                        isVideo = previewIsVideo,
+                        imageView = ivGridThumb,
+                        fallbackRes = 0
+                    )
                 } else {
-                    File(item.path).listFiles()?.firstOrNull { child ->
-                        child.isFile && (child.extension.lowercase() in FileItem.VIDEO_EXTENSIONS || child.extension.lowercase() in FileItem.IMAGE_EXTENSIONS)
-                    }
+                    ivGridThumb.tag = null
+                    ivGridThumb.setImageDrawable(null)
                 }
-                if (previewFile != null) {
-                    ivGridThumb.tag = previewFile.absolutePath
-                    if (previewFile.extension.lowercase() in FileItem.IMAGE_EXTENSIONS) {
-                        ThumbnailCacheManager.loadImageThumbnail(previewFile, ivGridThumb, iconRes)
-                    } else if (previewFile.extension.lowercase() in FileItem.VIDEO_EXTENSIONS) {
-                        ThumbnailCacheManager.loadVideoThumbnail(previewFile, ivGridThumb, iconRes)
-                    } else {
-                        ivGridThumb.scaleType = ImageView.ScaleType.FIT_CENTER
-                    }
+            } else if (!item.isDirectory && (item.isVideo || item.isImage)) {
+                // Orijinal Video/Resim Klasör İçi Izgarası (Video 1 00:08-00:11):
+                // Turuncu klasör ikonu ASLA gösterilmez; siyah kare zemin + ortada Play ikonu + 2 satır dosya adı!
+                flGridThumbContainer.setBackgroundColor(Color.BLACK)
+                tvGridFileName.isSingleLine = false
+                tvGridFileName.maxLines = 2
+                tvGridFileName.minLines = 2
+                tvGridFileName.ellipsize = TextUtils.TruncateAt.END
+                tvGridFileName.text = buildHighlightedText(item.name, highlightQuery)
+
+                ivGridPlayOverlay.visibility = if (item.isVideo) View.VISIBLE else View.GONE
+                ivGridCategoryBadge.visibility = View.GONE
+
+                if (item.sourceType == FileSourceType.LOCAL && AppSettings.showThumbnails) {
+                    ThumbnailCacheManager.loadThumbnailByPath(
+                        path = item.path,
+                        lastModified = item.lastModified,
+                        isVideo = item.isVideo,
+                        imageView = ivGridThumb,
+                        fallbackRes = 0
+                    )
                 } else {
-                    ivGridThumb.scaleType = ImageView.ScaleType.FIT_CENTER
+                    ivGridThumb.tag = null
+                    ivGridThumb.setImageDrawable(null)
                 }
+            } else {
+                // Normal Klasör / Belge / Ses Izgara Kutucuğu
+                flGridThumbContainer.setBackgroundColor(
+                    if (isDark) Color.parseColor("#181818") else Color.parseColor("#F5F5F5")
+                )
+                tvGridFileName.isSingleLine = false
+                tvGridFileName.maxLines = 2
+                tvGridFileName.minLines = 1
+                tvGridFileName.ellipsize = TextUtils.TruncateAt.END
+                val label = if (item.isDirectory && item.childCount >= 0) {
+                    "${item.name} (${item.childCount})"
+                } else {
+                    item.name
+                }
+                tvGridFileName.text = buildHighlightedText(label, highlightQuery)
+
+                ivGridPlayOverlay.visibility = View.GONE
+                ivGridCategoryBadge.visibility = View.GONE
+                val iconRes = resolveOriginalFileIcon(item)
+                ivGridThumb.tag = null
+                ivGridThumb.scaleType = ImageView.ScaleType.FIT_CENTER
+                val pad = (18 * ctx.resources.displayMetrics.density).toInt()
+                ivGridThumb.setPadding(pad, pad, pad, pad)
+                ivGridThumb.setImageResource(iconRes)
+                return@with
             }
+
+            ivGridThumb.setPadding(0, 0, 0, 0)
 
             val isSelected = selectedIds.contains(item.id)
             root.setBackgroundColor(
@@ -482,8 +594,7 @@ class FileListAdapter(
 }
 
 /**
- * 3. BULUT HESAPLARI IZGARASI ADAPTER'I (Orijinal Bulut ekranındaki 3 sütunlu Google Drive görünümü:
- *    Screenshot_20261028_124104_File Manager +.png & burada Google Drive hesap ekleme...mp4 00:01)
+ * 3. BULUT HESAPLARI ADAPTER'I (Orijinal Bulut ekranındaki hem 3 sütunlu ızgara hem de liste görünümü desteği)
  */
 class CloudAccountsAdapter(
     private var accounts: List<CloudAccount>,
@@ -514,6 +625,7 @@ class CloudAccountsAdapter(
             )
             val p = (10 * density).toInt()
             setPadding(p, p, p, p)
+            setBackgroundResource(android.R.drawable.list_selector_background)
         }
         val iv = ImageView(ctx).apply {
             val sz = (58 * density).toInt()
@@ -530,7 +642,7 @@ class CloudAccountsAdapter(
             gravity = Gravity.CENTER
             textSize = 13.5f
             isSingleLine = true
-            ellipsize = android.text.TextUtils.TruncateAt.END
+            ellipsize = TextUtils.TruncateAt.END
         }
         val tvSub = TextView(ctx).apply {
             layoutParams = LinearLayout.LayoutParams(
@@ -540,7 +652,7 @@ class CloudAccountsAdapter(
             gravity = Gravity.CENTER
             textSize = 11.5f
             isSingleLine = true
-            ellipsize = android.text.TextUtils.TruncateAt.END
+            ellipsize = TextUtils.TruncateAt.END
         }
         root.addView(iv)
         root.addView(tvTitle)
@@ -617,16 +729,17 @@ class RemoteAccountsAdapter(
     inner class RemoteVH(private val binding: ItemFileRowBinding) : RecyclerView.ViewHolder(binding.root) {
         fun bind(acc: RemoteAccount) = with(binding) {
             val ctx = root.context
-            tvFileName.text = acc.displayName
+            tvFileName.text = acc.host
             tvFileName.setTextColor(ThemeManager.getPrimaryTextColor(ctx))
 
-            tvFileSubInfo.text = "${acc.protocol.displayName} • ${acc.username}@${acc.host}:${acc.port}"
+            tvFileSubInfo.text = acc.username.ifBlank { acc.displayName }
             tvFileSubInfo.setTextColor(ThemeManager.getSecondaryTextColor(ctx))
             tvFileDate.text = ""
             rowDivider.setBackgroundColor(ThemeManager.getDividerColor(ctx))
 
             val iconRes = when (acc.protocol) {
-                RemoteProtocolType.LAN, RemoteProtocolType.SMB -> R.drawable.icon_folder_lan
+                RemoteProtocolType.LAN -> R.drawable.icon_folder_lan
+                RemoteProtocolType.SMB -> R.drawable.icon_folder_smb
                 RemoteProtocolType.FTP, RemoteProtocolType.FTPS -> R.drawable.icon_folder_ftp
                 RemoteProtocolType.SFTP -> R.drawable.icon_folder_sftp
                 RemoteProtocolType.WEBDAV -> R.drawable.icon_folder_webdav
