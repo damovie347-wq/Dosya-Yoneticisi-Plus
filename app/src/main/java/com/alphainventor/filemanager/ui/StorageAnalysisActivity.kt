@@ -481,7 +481,7 @@ class StorageAnalysisActivity : AppCompatActivity() {
         fun addCardTitleRow(card: LinearLayout, title: String, rightValue: String, subtitle: String = "") {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.BASELINE
+                gravity = Gravity.CENTER_VERTICAL
                 val pV = (4 * density).toInt()
                 setPadding(0, pV, 0, pV)
             }
