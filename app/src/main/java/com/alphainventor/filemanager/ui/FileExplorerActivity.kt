@@ -27,6 +27,7 @@ import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -63,6 +64,7 @@ import java.util.Stack
  * Orijinal Dosya Yöneticisi + 3.6.7 Dosya, Medya Kategorileri ve Bulut Gezgini:
  * - Videolar, Görüntüler, Ses ve Belgeler kategorilerinde önce 1:1 Kare Klasör Kutucukları (Screen recordings (8), Movies (6) vb.) gösterilir, klasöre tıklanınca o klasördeki medya dosyaları açılır.
  * - Orijinal APK'daki Lax/O1/b; ve viewer/c-e önbellek mimarisiyle klasör ve kategori geçişleri 0 ms'de (loading spinner çıkmadan) gerçekleşir.
+ * - Google Drive hesabında henüz geçerli bir token yoksa boş ekranda takılmak yerine doğrudan CloudAccountsActivity (AUTO_AUTH_ACCOUNT_ID) üzerinden şifresiz MergeSession yetkilendirmesini başlatır.
  * - MEGA bulut dosyalarına tıklandığında AES-CTR ile çözülerek yerel önbelleğe indirilir ve dahili oynatıcıda açılır.
  */
 class FileExplorerActivity : AppCompatActivity() {
@@ -86,7 +88,7 @@ class FileExplorerActivity : AppCompatActivity() {
     private var fullCurrentItems: List<FileItem> = emptyList()
     private var pendingExtractZipItem: FileItem? = null
 
-    private val driveConsentLauncher = registerForActivityResult(
+    private val driveConsentLauncher: ActivityResultLauncher<Intent> = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
@@ -184,7 +186,6 @@ class FileExplorerActivity : AppCompatActivity() {
                         else -> R.drawable.icon_main_storage_s
                     }
                 )
-                // Breadcrumb'daki kategori ikonuna (🎬 / 🖼 / 🎵) tıklanınca kategori kök klasörlerine dön
                 binding.ivRootTypeCrumb.setOnClickListener {
                     if (selectedBucketPath.isNotEmpty()) {
                         selectedBucketPath = ""
@@ -375,7 +376,6 @@ class FileExplorerActivity : AppCompatActivity() {
             }
         })
 
-        // Orijinal Alt Görünüm / Sıralama / Gizli Dosya Paneli
         binding.btnSortAndView.setOnClickListener {
             showOriginalViewSortBottomSheet()
         }
@@ -481,17 +481,6 @@ class FileExplorerActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Orijinal APK'daki (res/xml/location_settings.xml) Alt Görünüm / Sıralama / Gizli Dosya Paneli:
-     * 1) Tüm klasörlere uygula [ ]
-     * 2) Görünüm:
-     *    - [ ◯ Liste (v_shape_listview) ]   [ 🔘 Izgara (v_shape_gridview) ]   [ ◯ Detaylı (v_shape_detailview) ]
-     *    - [ 🔘 Küçük Boyut (v_shape_icon_medium) ]   [ ◯ Büyük Boyut (v_shape_icon_large) ]
-     * 3) Sırala:
-     *    - Tarih ▼ (Tıklanınca "Sıralama ölçütü" radyo butonlu diyaloğu açılır)
-     * 4) Diğerleri:
-     *    - Gizli dosyaları göster [ ]
-     */
     private fun showOriginalViewSortBottomSheet() {
         val sheet = BottomSheetDialog(this)
         val density = resources.displayMetrics.density
@@ -535,7 +524,6 @@ class FileExplorerActivity : AppCompatActivity() {
             })
         }
 
-        // 1. SATIR: Tüm klasörlere uygula
         val rowApplyAll = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -566,7 +554,6 @@ class FileExplorerActivity : AppCompatActivity() {
 
         addDivider()
 
-        // 2. BÖLÜM: Görünüm (Üst satır: Liste | Izgara | Detaylı, Alt satır: Küçük Simge | Büyük Simge)
         addSectionTitle("Görünüm")
 
         val pH = (20 * density).toInt()
@@ -613,7 +600,6 @@ class FileExplorerActivity : AppCompatActivity() {
         }
         root.addView(rgViewType)
 
-        // İkinci Radyo Satırı: Simge/Kare Boyutu (Küçük | Büyük | Boşluk)
         val rgIconSize = RadioGroup(this).apply {
             orientation = RadioGroup.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -641,7 +627,6 @@ class FileExplorerActivity : AppCompatActivity() {
 
         addDivider()
 
-        // 3. BÖLÜM: Sırala (Tarih ▼ -> Tıklanınca "Sıralama ölçütü" diyaloğu açılır)
         addSectionTitle("Sırala")
 
         val rowSort = LinearLayout(this).apply {
@@ -672,7 +657,6 @@ class FileExplorerActivity : AppCompatActivity() {
 
         addDivider()
 
-        // 4. BÖLÜM: Diğerleri -> Gizli dosyaları göster
         addSectionTitle("Diğerleri")
 
         val rowShowHidden = LinearLayout(this).apply {
@@ -708,7 +692,6 @@ class FileExplorerActivity : AppCompatActivity() {
         rowShowHidden.addView(cbShowHidden)
         root.addView(rowShowHidden)
 
-        // Normal klasörlerde "Küçük resimleri göster" seçeneğini de göster
         if (mode == "LOCAL") {
             val rowThumbs = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -830,11 +813,6 @@ class FileExplorerActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Orijinal APK'daki Lax/O1/b; (FileListCache) sıfır bekleme mantığı:
-     * - forceRefresh == false iken önbellekte (LocalFileRepository veya CloudManager) geçerli liste varsa
-     *   pbLoadingFiles halkasını HİÇ göstermeden 0 ms içinde doğrudan UI thread üzerinde listeyi günceller!
-     */
     private fun loadCurrentDirectory(forceRefresh: Boolean = false) {
         loadDirectoryJob?.cancel()
         applySavedViewModeForCurrentLocation()
@@ -886,6 +864,19 @@ class FileExplorerActivity : AppCompatActivity() {
                         driveConsentLauncher.launch(recovery)
                         return@launch
                     }
+
+                    // Eğer Google Drive hesabında henüz OAuth token yoksa boş ekranda beklemek yerine
+                    // doğrudan CloudAccountsActivity (AUTO_AUTH_ACCOUNT_ID) üzerinden MergeSession köprüsüyle bağla!
+                    val fallbackAcc = CloudManager.needsWebOAuthFallbackForAccount
+                    if (fallbackAcc != null && acc.provider == CloudProviderType.GOOGLE_DRIVE) {
+                        binding.pbLoadingFiles.visibility = View.GONE
+                        startActivity(Intent(this@FileExplorerActivity, CloudAccountsActivity::class.java).apply {
+                            putExtra("AUTO_AUTH_ACCOUNT_ID", acc.id)
+                        })
+                        finish()
+                        return@launch
+                    }
+
                     val refreshedAcc = CloudManager.getAccounts(this@FileExplorerActivity).firstOrNull { it.id == acc.id }
                     if (refreshedAcc != null) {
                         cloudAccount = refreshedAcc
@@ -1062,7 +1053,6 @@ class FileExplorerActivity : AppCompatActivity() {
             LocalFileRepository.recordHistory(this, item, section)
         }
 
-        // MEGA bulut dosyaları AES-CTR ile şifreli olduğu için önce yerel önbelleğe çözerek aç
         val acc = cloudAccount
         if (item.sourceType == FileSourceType.CLOUD && acc != null && acc.provider == CloudProviderType.MEGA) {
             openMegaCloudFile(acc, item)
