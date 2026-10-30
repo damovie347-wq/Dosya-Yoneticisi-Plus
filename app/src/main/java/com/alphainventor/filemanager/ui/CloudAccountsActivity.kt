@@ -5,7 +5,6 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
-import android.graphics.Typeface
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -27,6 +26,7 @@ import android.widget.PopupMenu
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -49,10 +49,8 @@ import com.alphainventor.filemanager.viewer.ImageViewerActivity
 import com.alphainventor.filemanager.viewer.MusicPlayerActivity
 import com.alphainventor.filemanager.viewer.VideoPlayerActivity
 import com.google.android.gms.common.AccountPicker
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.util.UUID
 
 /**
@@ -85,7 +83,7 @@ class CloudAccountsActivity : AppCompatActivity() {
      * Orijinal APK'daki (MainActivity->onActivityResult requestCode=3) AccountPicker sonucu:
      * Seçilen "authAccount" (AccountManager.KEY_ACCOUNT_NAME) değerini alır ve doğrudan yerel OAuth akışına sokar.
      */
-    private val googleAccountPickerLauncher = registerForActivityResult(
+    private val googleAccountPickerLauncher: ActivityResultLauncher<Intent> = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK && result.data != null) {
@@ -100,12 +98,16 @@ class CloudAccountsActivity : AppCompatActivity() {
      * Orijinal APK'daki (MainActivity->onActivityResult requestCode=11) yerel Google Drive izin sonucu:
      * Kullanıcı "İzin ver" dediğinde GoogleAuthUtil üzerinden token'ı alır, kotayı günceller ve Drive gezginini açar.
      */
-    private val googlePlayConsentLauncher = registerForActivityResult(
+    private val googlePlayConsentLauncher: ActivityResultLauncher<Intent> = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
+        handleGooglePlayConsentResult(result.resultCode)
+    }
+
+    private fun handleGooglePlayConsentResult(resultCode: Int) {
         val acc = pendingGoogleAccountForAuth
         pendingGoogleAccountForAuth = null
-        if (result.resultCode == Activity.RESULT_OK && acc != null) {
+        if (resultCode == Activity.RESULT_OK && acc != null) {
             lifecycleScope.launch {
                 val token = CloudManager.resolveGoogleDriveToken(
                     this@CloudAccountsActivity,
