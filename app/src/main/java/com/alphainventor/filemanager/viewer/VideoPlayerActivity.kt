@@ -51,6 +51,8 @@ import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.SeekParameters
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -110,6 +112,8 @@ class VideoPlayerActivity : AppCompatActivity() {
     private var subtitleTextSizeSp: Float = 18f
     private var externalSubtitleUri: Uri? = null
     private var videoZoomScale: Float = 1.0f
+    private var videoTransX: Float = 0f
+    private var videoTransY: Float = 0f
 
     private var preferSoftwareDecoder: Boolean = false
     private var usingPlatformFallback: Boolean = false
@@ -120,6 +124,8 @@ class VideoPlayerActivity : AppCompatActivity() {
     private var pendingScrubTargetMs: Long = -1L
     private var deferredSeekOnReadyMs: Long = -1L
     private var lastLiveSeekRealtimeMs: Long = 0L
+    private var lastSeekTargetMs: Long = -1L
+    private var lastSeekTimestampMs: Long = 0L
     private var errorRecoveryCount: Int = 0
 
     private val externalSubtitleLauncher = registerForActivityResult(
@@ -152,7 +158,16 @@ class VideoPlayerActivity : AppCompatActivity() {
                 } else {
                     val player = exoPlayer
                     if (player != null) {
-                        val pos = player.currentPosition.coerceAtLeast(0L)
+                        val now = SystemClock.elapsedRealtime()
+                        val rawPos = player.currentPosition.coerceAtLeast(0L)
+                        val pos = if (lastSeekTargetMs >= 0L && (now - lastSeekTimestampMs) < 750L && player.playbackState == Player.STATE_BUFFERING) {
+                            lastSeekTargetMs
+                        } else {
+                            if (player.playbackState == Player.STATE_READY) {
+                                lastSeekTargetMs = -1L
+                            }
+                            rawPos
+                        }
                         val dur = resolveEffectiveDuration(player)
                         binding.tvCurrentTime.text = FormatUtils.formatDuration(pos)
                         if (dur > 0L) {
@@ -261,20 +276,48 @@ class VideoPlayerActivity : AppCompatActivity() {
         binding.platformVideoView.stopPlayback()
         binding.platformVideoView.visibility = View.GONE
         binding.exoPlayerView.visibility = View.VISIBLE
+        binding.exoPlayerView.clipChildren = false
+        binding.exoPlayerView.clipToPadding = false
+        binding.exoPlayerView.findViewById<View>(androidx.media3.ui.R.id.exo_content_frame)?.apply {
+            clipChildren = false
+            clipToPadding = false
+        }
 
         exoPlayer?.release()
 
-        val permissiveSelector = MediaCodecSelector { mimeType, requiresSecure, requiresTunneling ->
-            val defaultList = MediaCodecUtil.getDecoderInfos(mimeType, requiresSecure, requiresTunneling)
-            if (defaultList.isNotEmpty() || requiresSecure) {
-                defaultList
+        // AV1 (10-bit Main10 / AV1Core) ve HEVC videolar için akıllı çözücü sıralaması:
+        // - HW+ modunda: Donanım çözücüleri -> hızlı çok çekirdekli dav1d -> diğer çözücüler (yavaş tek çekirdekli libgav1 en sonda).
+        // - SW modunda: dav1d -> yazılım çözücüleri -> donanım çözücüleri.
+        val smartCodecSelector = MediaCodecSelector { mimeType, requiresSecure, requiresTunneling ->
+            val rawList = MediaCodecUtil.getDecoderInfos(mimeType, requiresSecure, requiresTunneling).ifEmpty {
+                if (!requiresSecure) MediaCodecUtil.getDecoderInfos(mimeType, false, false) else emptyList()
+            }
+            if (rawList.size <= 1) {
+                rawList
             } else {
-                MediaCodecUtil.getDecoderInfos(mimeType, false, false)
+                rawList.sortedBy { info ->
+                    val nameLower = info.name.lowercase(Locale.ROOT)
+                    val isDav1d = nameLower.contains("dav1d")
+                    val isSw = info.softwareOnly || nameLower.startsWith("c2.android.") || nameLower.startsWith("omx.google.")
+                    if (preferSoftwareDecoder) {
+                        when {
+                            isDav1d -> 0
+                            isSw -> 1
+                            else -> 2
+                        }
+                    } else {
+                        when {
+                            !isSw -> 0
+                            isDav1d -> 1
+                            else -> 2
+                        }
+                    }
+                }
             }
         }
 
         val renderersFactory = DefaultRenderersFactory(this).apply {
-            setMediaCodecSelector(permissiveSelector)
+            setMediaCodecSelector(smartCodecSelector)
             setExtensionRendererMode(
                 if (preferSoftwareDecoder) DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER
                 else DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON
@@ -282,8 +325,12 @@ class VideoPlayerActivity : AppCompatActivity() {
             setEnableDecoderFallback(true)
         }
 
+        // Orijinal APK (ExoPlayer 2.18 ProgressiveMediaSource) ile birebir:
+        // MKV Cues anahtar kare tablosunu bozan CBR bayrağı kapalı ve Media3 1.3.1'in MKV sarma sırasında
+        // takılmaya yol açan SubtitleTranscodingExtractor katmanı devre dışı.
+        @Suppress("DEPRECATION")
         val extractorsFactory = DefaultExtractorsFactory()
-            .setConstantBitrateSeekingEnabled(true)
+            .setTextTrackTranscodingEnabled(false)
 
         val okHttpFactory = OkHttpDataSource.Factory(CloudManager.httpClient).apply {
             if (authToken.isNotBlank() && !authToken.startsWith("DEMO_")) {
@@ -293,12 +340,24 @@ class VideoPlayerActivity : AppCompatActivity() {
         val dataSourceFactory = DefaultDataSource.Factory(this, okHttpFactory)
         val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory, extractorsFactory)
 
-        // Orijinal APK 0 ms yerel başlangıç için minimum bufferForPlaybackMs (100ms)
+        val trackSelector = DefaultTrackSelector(this).apply {
+            val langTag = Locale.getDefault().toLanguageTag()
+            setParameters(
+                buildUponParameters()
+                    .setPreferredAudioLanguage(langTag)
+                    .setPreferredTextLanguage(langTag)
+                    .setSelectUndeterminedTextLanguage(true)
+                    .setExceedVideoConstraintsIfNecessary(true)
+                    .setExceedAudioConstraintsIfNecessary(true)
+                    .setExceedRendererCapabilitiesIfNecessary(true)
+            )
+        }
+
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
                 15_000,
                 50_000,
-                100,
+                150,
                 400
             )
             .setBackBuffer(10_000, true)
@@ -306,18 +365,18 @@ class VideoPlayerActivity : AppCompatActivity() {
             .build()
 
         exoPlayer = ExoPlayer.Builder(this, renderersFactory)
+            .setTrackSelector(trackSelector)
             .setMediaSourceFactory(mediaSourceFactory)
             .setLoadControl(loadControl)
             .build().also { player ->
+                // AV1 ve yüksek çözünürlüklü MKV'lerde ileri/geri sarmanın anında anahtar kareye (keyframe)
+                // oturması ve yüzlerce ara kareyi çözmeye çalışıp takılmaması için CLOSEST_SYNC:
+                player.setSeekParameters(SeekParameters.CLOSEST_SYNC)
                 binding.exoPlayerView.player = player
-                if (startPositionMs > 0L) {
-                    deferredSeekOnReadyMs = startPositionMs
-                }
                 loadMediaIntoExoPlayer(player, resetRecoveryState = !isErrorRecovery, initialPosMs = startPositionMs)
 
                 player.addListener(object : Player.Listener {
                     override fun onPlaybackStateChanged(playbackState: Int) {
-                        // Yerel videolarda gereksiz buffering halkasını gösterme, sadece ağ akışında göster
                         binding.pbVideoBuffering.visibility =
                             if (playbackState == Player.STATE_BUFFERING && isNetworkStream()) View.VISIBLE else View.GONE
 
@@ -327,9 +386,11 @@ class VideoPlayerActivity : AppCompatActivity() {
                             if (dur > 0L) {
                                 binding.tvTotalDuration.text = FormatUtils.formatDuration(dur)
                             }
-                            if (deferredSeekOnReadyMs > 0L) {
+                            if (deferredSeekOnReadyMs >= 0L) {
                                 val target = deferredSeekOnReadyMs
                                 deferredSeekOnReadyMs = -1L
+                                lastSeekTargetMs = target
+                                lastSeekTimestampMs = SystemClock.elapsedRealtime()
                                 player.seekTo(target)
                             }
                             updateSubtitleButtonIcon(player)
@@ -350,29 +411,39 @@ class VideoPlayerActivity : AppCompatActivity() {
 
                     override fun onPlayerError(error: PlaybackException) {
                         val resumePos = (
-                            pendingScrubTargetMs.takeIf { it >= 0L }
+                            lastSeekTargetMs.takeIf { it >= 0L }
+                                ?: pendingScrubTargetMs.takeIf { it >= 0L }
                                 ?: deferredSeekOnReadyMs.takeIf { it >= 0L }
                                 ?: player.currentPosition
                             ).coerceAtLeast(0L)
+                        pendingScrubTargetMs = -1L
 
                         when (errorRecoveryCount) {
                             0 -> {
                                 errorRecoveryCount = 1
-                                preferSoftwareDecoder = !preferSoftwareDecoder
-                                binding.tvCodecBadge.text = if (preferSoftwareDecoder) "SW" else "HW+"
-                                initializePlayer(startPositionMs = resumePos, isErrorRecovery = true)
+                                // Eğer oynatma sırasında (seek vb.) geçici bir hata oluştuysa oynatıcıyı yıkmadan yerinde kurtar
+                                if (knownDurationMs > 0L) {
+                                    player.setSeekParameters(SeekParameters.CLOSEST_SYNC)
+                                    player.trackSelectionParameters = player.trackSelectionParameters
+                                        .buildUpon()
+                                        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                                        .build()
+                                    player.prepare()
+                                    if (resumePos > 0L) {
+                                        player.seekTo(resumePos)
+                                    }
+                                    player.playWhenReady = true
+                                } else {
+                                    preferSoftwareDecoder = !preferSoftwareDecoder
+                                    binding.tvCodecBadge.text = if (preferSoftwareDecoder) "SW" else "HW+"
+                                    initializePlayer(startPositionMs = resumePos, isErrorRecovery = true)
+                                }
                             }
                             1 -> {
                                 errorRecoveryCount = 2
-                                player.trackSelectionParameters = player.trackSelectionParameters
-                                    .buildUpon()
-                                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
-                                    .build()
-                                player.prepare()
-                                if (resumePos > 0L) {
-                                    player.seekTo(resumePos)
-                                }
-                                player.playWhenReady = true
+                                preferSoftwareDecoder = !preferSoftwareDecoder
+                                binding.tvCodecBadge.text = if (preferSoftwareDecoder) "SW" else "HW+"
+                                initializePlayer(startPositionMs = resumePos, isErrorRecovery = true)
                             }
                             else -> {
                                 if (!isNetworkStream()) {
@@ -522,26 +593,42 @@ class VideoPlayerActivity : AppCompatActivity() {
     private fun executeSmartSeek(targetMs: Long, forceImmediate: Boolean) {
         val dur = resolveEffectiveDuration(exoPlayer)
         val clampedTarget = if (dur > 0L) targetMs.coerceIn(0L, dur) else targetMs.coerceAtLeast(0L)
-        pendingScrubTargetMs = clampedTarget
 
         if (usingPlatformFallback) {
             if (forceImmediate) {
+                pendingScrubTargetMs = -1L
                 binding.platformVideoView.seekTo(clampedTarget.toInt())
+            } else {
+                pendingScrubTargetMs = clampedTarget
             }
             return
         }
 
         val player = exoPlayer ?: return
         val now = SystemClock.elapsedRealtime()
-        if (player.playbackState == Player.STATE_READY && player.duration > 0L) {
-            if (forceImmediate || (now - lastLiveSeekRealtimeMs >= 220L)) {
-                lastLiveSeekRealtimeMs = now
+        player.setSeekParameters(SeekParameters.CLOSEST_SYNC)
+
+        if (forceImmediate) {
+            pendingScrubTargetMs = -1L
+            lastSeekTargetMs = clampedTarget
+            lastSeekTimestampMs = now
+            lastLiveSeekRealtimeMs = now
+            if (player.playbackState == Player.STATE_IDLE) {
+                deferredSeekOnReadyMs = clampedTarget
+                player.prepare()
+            } else {
+                deferredSeekOnReadyMs = -1L
                 player.seekTo(clampedTarget)
             }
         } else {
-            deferredSeekOnReadyMs = clampedTarget
-            if (forceImmediate && player.playbackState == Player.STATE_IDLE) {
-                player.prepare()
+            pendingScrubTargetMs = clampedTarget
+            // Sürükleme esnasında yalnızca çözücü hazır (STATE_READY) ise önizleme sarması yap;
+            // çözücü STATE_BUFFERING içindeyken üst üste seek yığılmasını önle
+            if (player.playbackState == Player.STATE_READY && (now - lastLiveSeekRealtimeMs >= 250L)) {
+                lastLiveSeekRealtimeMs = now
+                lastSeekTargetMs = clampedTarget
+                lastSeekTimestampMs = now
+                player.seekTo(clampedTarget)
             }
         }
     }
@@ -751,12 +838,59 @@ class VideoPlayerActivity : AppCompatActivity() {
         }
     }
 
-    private fun cycleAspectRatio() {
+    private fun getZoomTargetView(): View {
+        return if (usingPlatformFallback) {
+            binding.platformVideoView
+        } else {
+            binding.exoPlayerView.findViewById<View>(androidx.media3.ui.R.id.exo_content_frame)
+                ?: binding.exoPlayerView
+        }
+    }
+
+    private fun resetVideoZoomAndPan() {
         videoZoomScale = 1.0f
+        videoTransX = 0f
+        videoTransY = 0f
+        val target = getZoomTargetView()
+        target.scaleX = 1.0f
+        target.scaleY = 1.0f
+        target.translationX = 0f
+        target.translationY = 0f
         binding.exoPlayerView.videoSurfaceView?.apply {
             scaleX = 1.0f
             scaleY = 1.0f
+            translationX = 0f
+            translationY = 0f
         }
+    }
+
+    private fun applyVideoZoomAndPan(focusDeltaX: Float = 0f, focusDeltaY: Float = 0f) {
+        if (videoZoomScale <= 1.01f) {
+            resetVideoZoomAndPan()
+            return
+        }
+        val target = getZoomTargetView()
+        val containerW = binding.videoPlayerRoot.width.coerceAtLeast(1).toFloat()
+        val containerH = binding.videoPlayerRoot.height.coerceAtLeast(1).toFloat()
+        val baseW = target.width.takeIf { it > 0 }?.toFloat() ?: containerW
+        val baseH = target.height.takeIf { it > 0 }?.toFloat() ?: containerH
+
+        val scaledW = baseW * videoZoomScale
+        val scaledH = baseH * videoZoomScale
+        val maxTransX = ((scaledW - containerW) * 0.5f).coerceAtLeast((baseW * (videoZoomScale - 1f)) * 0.5f)
+        val maxTransY = ((scaledH - containerH) * 0.5f).coerceAtLeast((baseH * (videoZoomScale - 1f)) * 0.5f)
+
+        videoTransX = (videoTransX + focusDeltaX).coerceIn(-maxTransX, maxTransX)
+        videoTransY = (videoTransY + focusDeltaY).coerceIn(-maxTransY, maxTransY)
+
+        target.scaleX = videoZoomScale
+        target.scaleY = videoZoomScale
+        target.translationX = videoTransX
+        target.translationY = videoTransY
+    }
+
+    private fun cycleAspectRatio() {
+        resetVideoZoomAndPan()
         val nextMode = when (binding.exoPlayerView.resizeMode) {
             androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT -> {
                 binding.btnAspectRatio.setImageResource(R.drawable.ic_vp_resize_crop)
@@ -1389,25 +1523,45 @@ class VideoPlayerActivity : AppCompatActivity() {
         var startVolume = 0
         var startBrightness = 0.5f
 
+        var prevScaleFocusX = 0f
+        var prevScaleFocusY = 0f
+
         val scaleGestureDetector = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
             override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
                 if (isControlsLocked) return false
                 gestureMode = 3
+                prevScaleFocusX = detector.focusX
+                prevScaleFocusY = detector.focusY
                 return true
             }
 
             override fun onScale(detector: ScaleGestureDetector): Boolean {
                 if (isControlsLocked) return false
-                videoZoomScale = (videoZoomScale * detector.scaleFactor).coerceIn(0.5f, 3.0f)
-                binding.exoPlayerView.videoSurfaceView?.apply {
-                    scaleX = videoZoomScale
-                    scaleY = videoZoomScale
-                }
+                val factor = detector.scaleFactor
+                if (factor.isNaN() || factor <= 0f) return false
+                // Orijinal APK X5(FFFFF)V: Zoom ölçeği [1.0f, 3.0f] (%100 - %300) aralığındadır, %100'ün altına küçülmez!
+                val oldScale = videoZoomScale
+                videoZoomScale = (videoZoomScale * factor).coerceIn(1.0f, 3.0f)
+                val panDx = detector.focusX - prevScaleFocusX
+                val panDy = detector.focusY - prevScaleFocusY
+                prevScaleFocusX = detector.focusX
+                prevScaleFocusY = detector.focusY
+
+                val centerX = binding.videoPlayerRoot.width * 0.5f
+                val centerY = binding.videoPlayerRoot.height * 0.5f
+                val scaleRatio = if (oldScale > 0f) videoZoomScale / oldScale else 1f
+                videoTransX = (videoTransX - (detector.focusX - centerX) * (scaleRatio - 1f))
+                videoTransY = (videoTransY - (detector.focusY - centerY) * (scaleRatio - 1f))
+
+                applyVideoZoomAndPan(panDx, panDy)
                 showCenterOverlayLabel("${(videoZoomScale * 100).toInt()}%")
                 return true
             }
 
             override fun onScaleEnd(detector: ScaleGestureDetector) {
+                if (videoZoomScale <= 1.02f) {
+                    resetVideoZoomAndPan()
+                }
                 hideCenterOverlayLabelDelayed(500L)
             }
         })

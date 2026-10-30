@@ -704,16 +704,22 @@ class CloudAccountsActivity : AppCompatActivity() {
                         if (approveBtn && approveBtn.offsetParent !== null && !approveBtn.disabled) {
                             approveBtn.scrollIntoView({block: 'center'});
                             var ar = approveBtn.getBoundingClientRect();
-                            try {
-                                approveBtn.click();
-                                var form = approveBtn.closest('form');
-                                if (form) form.submit();
-                            } catch (e) {}
-                            if (ar.width > 0 && ar.height > 0 && !window._fmConsentTapped) {
-                                window._fmConsentTapped = true;
-                                return 'TAP|' + (ar.left + ar.width / 2) + '|' + (ar.top + ar.height / 2) + '|' + vw + '|' + vh + '|consent_approve';
+                            var btnKey = (approveBtn.innerText || approveBtn.value || approveBtn.id || 'approve').trim().toLowerCase();
+                            var nowMs = Date.now();
+                            var lastTapMs = window._fmLastConsentTapMs || 0;
+                            if (window._fmLastConsentKey !== btnKey || (nowMs - lastTapMs) > 900) {
+                                window._fmLastConsentKey = btnKey;
+                                window._fmLastConsentTapMs = nowMs;
+                                try {
+                                    approveBtn.click();
+                                    var form = approveBtn.closest('form');
+                                    if (form) form.submit();
+                                } catch (e) {}
+                                if (ar.width > 0 && ar.height > 0) {
+                                    return 'TAP|' + (ar.left + ar.width / 2) + '|' + (ar.top + ar.height / 2) + '|' + vw + '|' + vh + '|consent_approve';
+                                }
                             }
-                            return 'REVEAL';
+                            return 'WAIT';
                         }
 
                         var passInput = document.querySelector('input[type="password"]');
@@ -721,22 +727,41 @@ class CloudAccountsActivity : AppCompatActivity() {
                         var emailInput = document.querySelector('input[type="email"], #identifierId');
                         var isEmailVisible = emailInput && emailInput.offsetParent !== null;
 
-                        if (targetEmail && !isPassVisible && !isEmailVisible && !window._fmAccountTapped) {
+                        if (!isPassVisible && !isEmailVisible) {
                             var items = document.querySelectorAll('li [data-identifier], [role="link"][data-identifier], [data-identifier], [data-email]');
-                            if (items.length > 1 || href.indexOf('accountchooser') !== -1 || href.indexOf('oauthchooseaccount') !== -1) {
+                            if (items.length >= 1) {
+                                var chosenEl = null;
                                 for (var k = 0; k < items.length; k++) {
                                     var idVal = (items[k].getAttribute('data-identifier') || items[k].getAttribute('data-email') || '').toLowerCase();
-                                    if (idVal === targetEmail) {
-                                        window._fmAccountTapped = true;
-                                        items[k].scrollIntoView({block: 'center'});
-                                        var r = items[k].getBoundingClientRect();
-                                        try { items[k].click(); } catch (e) {}
+                                    if (targetEmail && idVal === targetEmail) {
+                                        chosenEl = items[k];
+                                        break;
+                                    }
+                                }
+                                if (!chosenEl && items.length === 1) {
+                                    var firstId = (items[0].getAttribute('data-identifier') || items[0].getAttribute('data-email') || '').toLowerCase();
+                                    if (firstId.indexOf('@') !== -1) {
+                                        chosenEl = items[0];
+                                    }
+                                }
+                                if (chosenEl) {
+                                    var nowAccMs = Date.now();
+                                    if (!window._fmLastAccountTapMs || (nowAccMs - window._fmLastAccountTapMs) > 1000) {
+                                        window._fmLastAccountTapMs = nowAccMs;
+                                        chosenEl.scrollIntoView({block: 'center'});
+                                        var r = chosenEl.getBoundingClientRect();
+                                        try { chosenEl.click(); } catch (e) {}
                                         if (r.width > 0 && r.height > 0) {
                                             return 'TAP|' + (r.left + r.width / 2) + '|' + (r.top + r.height / 2) + '|' + vw + '|' + vh + '|account_select';
                                         }
                                     }
+                                    return 'WAIT';
                                 }
                             }
+                        }
+
+                        if (isEmailVisible || isPassVisible) {
+                            return 'LOGIN_VISIBLE';
                         }
 
                         return 'REVEAL';
@@ -746,23 +771,59 @@ class CloudAccountsActivity : AppCompatActivity() {
                 })();
             """.trimIndent()
 
-            fun evaluateAndProcessOAuthPage(view: WebView?) {
+            var mergeRetryAttempted = false
+
+            fun evaluateAndProcessOAuthPage(view: WebView?, allowReveal: Boolean = false) {
                 val wv = view ?: webViewRef ?: return
                 if (codeHandled) return
                 wv.evaluateJavascript(sanitizeAndAutomateJs) { rawResult ->
                     val res = unescapeEvaluateJsString(rawResult)
-                    if (res.startsWith("TAP|")) {
-                        val parts = res.split("|")
-                        val cx = parts.getOrNull(1)?.toFloatOrNull() ?: 0f
-                        val cy = parts.getOrNull(2)?.toFloatOrNull() ?: 0f
-                        val vw = parts.getOrNull(3)?.toFloatOrNull() ?: 360f
-                        val vh = parts.getOrNull(4)?.toFloatOrNull() ?: 640f
-                        dispatchViewportTapOnWebView(cx, cy, vw, vh)
-                        mainHandler.postDelayed({
-                            revealCleanWebViewOnUiThread()
-                        }, 600L)
-                    } else {
-                        revealCleanWebViewOnUiThread()
+                    when {
+                        res.startsWith("TAP|") -> {
+                            val parts = res.split("|")
+                            val cx = parts.getOrNull(1)?.toFloatOrNull() ?: 0f
+                            val cy = parts.getOrNull(2)?.toFloatOrNull() ?: 0f
+                            val vw = parts.getOrNull(3)?.toFloatOrNull() ?: 360f
+                            val vh = parts.getOrNull(4)?.toFloatOrNull() ?: 640f
+                            dispatchViewportTapOnWebView(cx, cy, vw, vh)
+                            mainHandler.postDelayed({
+                                if (!codeHandled) evaluateAndProcessOAuthPage(wv, allowReveal = false)
+                            }, 550L)
+                            mainHandler.postDelayed({
+                                if (!codeHandled) evaluateAndProcessOAuthPage(wv, allowReveal = true)
+                            }, 1300L)
+                        }
+                        res == "LOGIN_VISIBLE" -> {
+                            if (!mergeRetryAttempted && !emailHint.isNullOrBlank()) {
+                                mergeRetryAttempted = true
+                                lifecycleScope.launch {
+                                    val retryMergeUrl = CloudManager.tryGetWebLoginMergeSessionUrl(
+                                        context = this@CloudAccountsActivity,
+                                        activity = this@CloudAccountsActivity,
+                                        email = emailHint,
+                                        continueUrl = authUrl,
+                                        scopeIndex = 1
+                                    )
+                                    if (!retryMergeUrl.isNullOrBlank() && !codeHandled) {
+                                        wv.loadUrl(retryMergeUrl)
+                                    } else if (allowReveal) {
+                                        revealCleanWebViewOnUiThread()
+                                    }
+                                }
+                            } else if (allowReveal) {
+                                revealCleanWebViewOnUiThread()
+                            }
+                        }
+                        res == "WAIT" -> {
+                            mainHandler.postDelayed({
+                                if (!codeHandled) evaluateAndProcessOAuthPage(wv, allowReveal = true)
+                            }, 650L)
+                        }
+                        else -> {
+                            if (allowReveal) {
+                                revealCleanWebViewOnUiThread()
+                            }
+                        }
                     }
                 }
             }
@@ -800,6 +861,7 @@ class CloudAccountsActivity : AppCompatActivity() {
                             return
                         }
                         if (u.contains("myaccount.google.com") || u.contains("accounts.google.com/ManageAccount") || u.contains("www.google.com")) {
+                            CookieManager.getInstance().flush()
                             view?.loadUrl(authUrl)
                         }
                     }
@@ -807,8 +869,9 @@ class CloudAccountsActivity : AppCompatActivity() {
                     override fun onPageCommitVisible(view: WebView?, url: String?) {
                         super.onPageCommitVisible(view, url)
                         val u = url ?: ""
-                        if (!u.contains("MergeSession") && !u.contains("CheckCookie")) {
-                            evaluateAndProcessOAuthPage(view)
+                        if (!u.contains("MergeSession") && !u.contains("CheckCookie") &&
+                            !u.contains("ManageAccount") && !u.contains("myaccount.google.com") && !u.contains("www.google.com")) {
+                            evaluateAndProcessOAuthPage(view, allowReveal = false)
                         }
                     }
 
@@ -823,6 +886,7 @@ class CloudAccountsActivity : AppCompatActivity() {
                             return
                         }
                         if (u.contains("myaccount.google.com") || u.contains("accounts.google.com/ManageAccount") || u.contains("www.google.com")) {
+                            CookieManager.getInstance().flush()
                             view?.loadUrl(authUrl)
                             return
                         }
@@ -830,6 +894,7 @@ class CloudAccountsActivity : AppCompatActivity() {
                             mainHandler.postDelayed({
                                 val cur = view?.url ?: ""
                                 if (!codeHandled && cur.contains("MergeSession")) {
+                                    CookieManager.getInstance().flush()
                                     view?.loadUrl(authUrl)
                                 }
                             }, 1500L)
@@ -837,8 +902,11 @@ class CloudAccountsActivity : AppCompatActivity() {
                         }
                         if (!u.contains("CheckCookie")) {
                             mainHandler.postDelayed({
-                                evaluateAndProcessOAuthPage(view)
+                                evaluateAndProcessOAuthPage(view, allowReveal = false)
                             }, 150L)
+                            mainHandler.postDelayed({
+                                evaluateAndProcessOAuthPage(view, allowReveal = true)
+                            }, 950L)
                         }
                     }
 
@@ -908,11 +976,10 @@ class CloudAccountsActivity : AppCompatActivity() {
                     if (curUrl.isBlank()) {
                         webView.loadUrl(authUrl)
                     } else if (!curUrl.contains("MergeSession")) {
-                        evaluateAndProcessOAuthPage(webView)
+                        evaluateAndProcessOAuthPage(webView, allowReveal = true)
                     }
-                    revealCleanWebViewOnUiThread()
                 }
-            }, 3200L)
+            }, 3800L)
 
             loopbackServerJob = lifecycleScope.launch(Dispatchers.IO) {
                 try {

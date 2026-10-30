@@ -1,6 +1,8 @@
 package com.alphainventor.filemanager.viewer
 
+import android.animation.ValueAnimator
 import android.content.Context
+import android.view.animation.DecelerateInterpolator
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -646,9 +648,10 @@ class ImageViewerActivity : AppCompatActivity() {
             // 2) Orijinal APK @id/photo_preview_image mantığı: ThumbnailCacheManager'da küçük resim varsa
             //    loading spinner göstermeden 0 ms'de küçük resmi göster, arka planda tam çözünürlüğü çöz!
             val cachedThumb = ThumbnailCacheManager.getCached(pathOrUrl)
-            if (cachedThumb != null && !cachedThumb.isRecycled) {
+            val hadThumb = cachedThumb != null && !cachedThumb.isRecycled
+            if (hadThumb && cachedThumb != null) {
                 holder.progressBar.visibility = View.GONE
-                holder.zoomImageView.setZoomBitmap(cachedThumb)
+                holder.zoomImageView.setZoomBitmap(cachedThumb, preserveZoomIfActive = false)
             } else {
                 holder.zoomImageView.setImageBitmap(null)
                 holder.progressBar.visibility = View.VISIBLE
@@ -665,7 +668,7 @@ class ImageViewerActivity : AppCompatActivity() {
                 if (holder.zoomImageView.tag == pathOrUrl) {
                     holder.progressBar.visibility = View.GONE
                     if (bmp != null && !bmp.isRecycled) {
-                        holder.zoomImageView.setZoomBitmap(bmp)
+                        holder.zoomImageView.setZoomBitmap(bmp, preserveZoomIfActive = hadThumb)
                     }
                 }
             }
@@ -688,36 +691,43 @@ class ZoomableImageView @JvmOverloads constructor(
     private val baseMatrix = Matrix()
     private val drawMatrix = Matrix()
     private val displayRect = RectF()
+    private val matrixValues = FloatArray(9)
 
     private var currentScale = 1f
     private val minScale = 1f
     private val maxScale = 5f
 
     private val lastTouch = PointF()
+    private var activePointerId = MotionEvent.INVALID_POINTER_ID
     private var isDragging = false
+    private var zoomAnimator: ValueAnimator? = null
 
     var onSingleTapListener: (() -> Unit)? = null
 
     private val scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
+            cancelZoomAnimation()
             parent?.requestDisallowInterceptTouchEvent(true)
+            lastTouch.set(detector.focusX, detector.focusY)
             return true
         }
 
         override fun onScale(detector: ScaleGestureDetector): Boolean {
             val factor = detector.scaleFactor
+            if (factor.isNaN() || factor <= 0f) return false
             val newScale = (currentScale * factor).coerceIn(minScale, maxScale)
             val actualFactor = newScale / currentScale
             currentScale = newScale
             drawMatrix.postScale(actualFactor, actualFactor, detector.focusX, detector.focusY)
             constrainMatrixBounds()
             imageMatrix = drawMatrix
+            lastTouch.set(detector.focusX, detector.focusY)
             return true
         }
 
         override fun onScaleEnd(detector: ScaleGestureDetector) {
-            if (currentScale < 1.02f) {
-                resetToFitCenter()
+            if (currentScale < 1.03f) {
+                animateToFitCenter()
             }
         }
     })
@@ -729,15 +739,11 @@ class ZoomableImageView @JvmOverloads constructor(
         }
 
         override fun onDoubleTap(e: MotionEvent): Boolean {
+            cancelZoomAnimation()
             if (currentScale > 1.15f) {
-                resetToFitCenter()
+                animateToFitCenter()
             } else {
-                val targetScale = 2.8f
-                val factor = targetScale / currentScale
-                currentScale = targetScale
-                drawMatrix.postScale(factor, factor, e.x, e.y)
-                constrainMatrixBounds()
-                imageMatrix = drawMatrix
+                animateZoomToPoint(2.6f, e.x, e.y)
                 parent?.requestDisallowInterceptTouchEvent(true)
             }
             return true
@@ -748,10 +754,21 @@ class ZoomableImageView @JvmOverloads constructor(
         scaleType = ScaleType.MATRIX
     }
 
-    fun setZoomBitmap(bmp: Bitmap) {
+    private fun cancelZoomAnimation() {
+        zoomAnimator?.cancel()
+        zoomAnimator = null
+    }
+
+    fun setZoomBitmap(bmp: Bitmap, preserveZoomIfActive: Boolean = false) {
+        cancelZoomAnimation()
+        val prevScale = currentScale
         super.setImageBitmap(bmp)
         if (width > 0 && height > 0) {
-            resetToFitCenter()
+            if (preserveZoomIfActive && prevScale > 1.03f) {
+                rebuildBaseMatrixKeepingScale(prevScale)
+            } else {
+                resetToFitCenter()
+            }
         } else {
             post {
                 resetToFitCenter()
@@ -766,24 +783,100 @@ class ZoomableImageView @JvmOverloads constructor(
         }
     }
 
-    fun resetToFitCenter() {
-        val d = drawable ?: return
+    private fun computeFitCenterMatrix(outMatrix: Matrix): Boolean {
+        val d = drawable ?: return false
         val vw = width.toFloat()
         val vh = height.toFloat()
         val dw = d.intrinsicWidth.toFloat()
         val dh = d.intrinsicHeight.toFloat()
-        if (vw <= 0f || vh <= 0f || dw <= 0f || dh <= 0f) return
+        if (vw <= 0f || vh <= 0f || dw <= 0f || dh <= 0f) return false
 
-        baseMatrix.reset()
+        outMatrix.reset()
         val scale = min(vw / dw, vh / dh)
         val dx = (vw - dw * scale) * 0.5f
         val dy = (vh - dh * scale) * 0.5f
-        baseMatrix.postScale(scale, scale)
-        baseMatrix.postTranslate(dx, dy)
+        outMatrix.postScale(scale, scale)
+        outMatrix.postTranslate(dx, dy)
+        return true
+    }
 
+    private fun rebuildBaseMatrixKeepingScale(savedScale: Float) {
+        if (!computeFitCenterMatrix(baseMatrix)) return
+        drawMatrix.set(baseMatrix)
+        currentScale = savedScale.coerceIn(minScale, maxScale)
+        drawMatrix.postScale(currentScale, currentScale, width * 0.5f, height * 0.5f)
+        constrainMatrixBounds()
+        imageMatrix = drawMatrix
+    }
+
+    fun resetToFitCenter() {
+        cancelZoomAnimation()
+        if (!computeFitCenterMatrix(baseMatrix)) return
         drawMatrix.set(baseMatrix)
         currentScale = 1f
         imageMatrix = drawMatrix
+    }
+
+    private fun animateToFitCenter() {
+        if (!computeFitCenterMatrix(baseMatrix)) return
+        animateMatrixFromTo(drawMatrix, baseMatrix, 1f)
+    }
+
+    private fun animateZoomToPoint(targetScale: Float, focusX: Float, focusY: Float) {
+        if (!computeFitCenterMatrix(baseMatrix)) return
+        val endMatrix = Matrix(drawMatrix)
+        val factor = targetScale / currentScale.coerceAtLeast(0.1f)
+        endMatrix.postScale(factor, factor, focusX, focusY)
+        val d = drawable
+        if (d != null) {
+            val rect = RectF(0f, 0f, d.intrinsicWidth.toFloat(), d.intrinsicHeight.toFloat())
+            endMatrix.mapRect(rect)
+            val vw = width.toFloat()
+            val vh = height.toFloat()
+            var dx = 0f
+            var dy = 0f
+            if (rect.width() <= vw) {
+                dx = (vw - rect.width()) * 0.5f - rect.left
+            } else if (rect.left > 0f) {
+                dx = -rect.left
+            } else if (rect.right < vw) {
+                dx = vw - rect.right
+            }
+            if (rect.height() <= vh) {
+                dy = (vh - rect.height()) * 0.5f - rect.top
+            } else if (rect.top > 0f) {
+                dy = -rect.top
+            } else if (rect.bottom < vh) {
+                dy = vh - rect.bottom
+            }
+            endMatrix.postTranslate(dx, dy)
+        }
+        animateMatrixFromTo(drawMatrix, endMatrix, targetScale)
+    }
+
+    private fun animateMatrixFromTo(startMat: Matrix, endMat: Matrix, targetScale: Float) {
+        cancelZoomAnimation()
+        val startVals = FloatArray(9)
+        val endVals = FloatArray(9)
+        val interpVals = FloatArray(9)
+        startMat.getValues(startVals)
+        endMat.getValues(endVals)
+        val startScale = currentScale
+
+        zoomAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 210L
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { anim ->
+                val t = anim.animatedValue as Float
+                for (i in 0..8) {
+                    interpVals[i] = startVals[i] + (endVals[i] - startVals[i]) * t
+                }
+                drawMatrix.setValues(interpVals)
+                currentScale = startScale + (targetScale - startScale) * t
+                imageMatrix = drawMatrix
+            }
+            start()
+        }
     }
 
     private fun constrainMatrixBounds() {
@@ -821,6 +914,8 @@ class ZoomableImageView @JvmOverloads constructor(
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                cancelZoomAnimation()
+                activePointerId = event.getPointerId(0)
                 lastTouch.set(event.x, event.y)
                 isDragging = false
                 if (currentScale > 1.03f) {
@@ -831,17 +926,41 @@ class ZoomableImageView @JvmOverloads constructor(
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
                 parent?.requestDisallowInterceptTouchEvent(true)
+                val idx = event.actionIndex
+                activePointerId = event.getPointerId(idx)
+                lastTouch.set(event.getX(idx), event.getY(idx))
+            }
+            MotionEvent.ACTION_POINTER_UP -> {
+                // İki parmakla zoom sonrası bir parmak kaldırıldığında kalan parmağın konumuna kesintisiz geç (atlamayı önler)
+                val pointerIdx = event.actionIndex
+                val pointerId = event.getPointerId(pointerIdx)
+                if (pointerId == activePointerId) {
+                    val newIdx = if (pointerIdx == 0) 1 else 0
+                    if (newIdx < event.pointerCount) {
+                        activePointerId = event.getPointerId(newIdx)
+                        lastTouch.set(event.getX(newIdx), event.getY(newIdx))
+                    }
+                } else {
+                    val activeIdx = event.findPointerIndex(activePointerId)
+                    if (activeIdx >= 0 && activeIdx < event.pointerCount) {
+                        lastTouch.set(event.getX(activeIdx), event.getY(activeIdx))
+                    }
+                }
+                isDragging = false
             }
             MotionEvent.ACTION_MOVE -> {
                 if (!scaleDetector.isInProgress && event.pointerCount == 1 && currentScale > 1.03f) {
-                    val dx = event.x - lastTouch.x
-                    val dy = event.y - lastTouch.y
-                    if (abs(dx) > 2f || abs(dy) > 2f) {
+                    val activeIdx = event.findPointerIndex(activePointerId).takeIf { it >= 0 } ?: 0
+                    val curX = event.getX(activeIdx)
+                    val curY = event.getY(activeIdx)
+                    val dx = curX - lastTouch.x
+                    val dy = curY - lastTouch.y
+                    if (abs(dx) > 1.5f || abs(dy) > 1.5f) {
                         isDragging = true
                         drawMatrix.postTranslate(dx, dy)
                         constrainMatrixBounds()
                         imageMatrix = drawMatrix
-                        lastTouch.set(event.x, event.y)
+                        lastTouch.set(curX, curY)
 
                         val atLeftEdge = displayRect.left >= -2f && dx > 6f
                         val atRightEdge = displayRect.right <= width + 2f && dx < -6f
@@ -850,12 +969,15 @@ class ZoomableImageView @JvmOverloads constructor(
                         } else {
                             parent?.requestDisallowInterceptTouchEvent(true)
                         }
+                    } else {
+                        lastTouch.set(curX, curY)
                     }
                 } else if (event.pointerCount >= 2) {
                     parent?.requestDisallowInterceptTouchEvent(true)
                 }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                activePointerId = MotionEvent.INVALID_POINTER_ID
                 isDragging = false
                 if (currentScale <= 1.03f) {
                     parent?.requestDisallowInterceptTouchEvent(false)

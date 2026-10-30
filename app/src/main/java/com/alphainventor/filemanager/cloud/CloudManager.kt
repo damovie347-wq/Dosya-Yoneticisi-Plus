@@ -246,7 +246,8 @@ object CloudManager {
         context: Context,
         activity: Activity?,
         email: String,
-        continueUrl: String
+        continueUrl: String,
+        scopeIndex: Int = 0
     ): String? = withContext(Dispatchers.IO) {
         pendingWebLoginRecoveryIntent = null
         val cleanEmail = email.trim()
@@ -262,51 +263,59 @@ object CloudManager {
             Account(cleanEmail, "com.google")
         }
 
-        val encodedContinue = URLEncoder.encode(continueUrl, "UTF-8")
-        val scopesToTry = listOf(
-            "weblogin:service=gaia&continue=$encodedContinue",
-            "weblogin:continue=$encodedContinue"
+        // Google IssueAuthToken (weblogin:) servisi yalnızca temiz Google servis URL hedeflerini kabul eder.
+        // Ayrıca AccountManager dönen tek kullanımlık (60 sn ömürlü uberauth) MergeSession URL'sini önbelleğe
+        // aldığı için, her çağrıda önce invalidateAuthToken çağrılarak taze ve kullanılmamış bir token üretilir.
+        val allScopes = listOf(
+            "weblogin:service=gaia&continue=https://accounts.google.com/ManageAccount",
+            "weblogin:continue=https://www.google.com",
+            "weblogin:service=weblogin&continue=https://www.google.com"
         )
+        val orderedScopes = if (scopeIndex in allScopes.indices) {
+            allScopes.drop(scopeIndex) + allScopes.take(scopeIndex)
+        } else {
+            allScopes
+        }
 
-        // 1. Öncelik: AccountManager.getAuthToken (Activity ile çağrıldığında sistem OK/İzin penceresini
-        // kendi içinde açar ve kullanıcı OK dediğinde doğrudan KEY_AUTHTOKEN = MergeSession URL döndürür!)
-        for (scope in scopesToTry) {
+        for (scope in orderedScopes) {
             try {
                 @Suppress("DEPRECATION")
-                val future = if (activity != null && !activity.isFinishing) {
+                val firstFuture = if (activity != null && !activity.isFinishing) {
                     am.getAuthToken(googleAccount, scope, null, activity, null, null)
                 } else {
                     am.getAuthToken(googleAccount, scope, null, false, null, null)
                 }
-                val bundle = future.getResult(45, TimeUnit.SECONDS)
-                val tokenUrl = bundle?.getString(AccountManager.KEY_AUTHTOKEN)
-                if (!tokenUrl.isNullOrBlank() && (tokenUrl.startsWith("https://") || tokenUrl.startsWith("http://"))) {
-                    return@withContext tokenUrl
+                val firstBundle = firstFuture.getResult(45, TimeUnit.SECONDS)
+                val firstToken = firstBundle?.getString(AccountManager.KEY_AUTHTOKEN)
+
+                if (!firstToken.isNullOrBlank()) {
+                    // Önbellekteki olası kullanılmış/süresi dolmuş MergeSession URL'sini temizle ve taze token iste
+                    am.invalidateAuthToken("com.google", firstToken)
+
+                    @Suppress("DEPRECATION")
+                    val freshFuture = if (activity != null && !activity.isFinishing) {
+                        am.getAuthToken(googleAccount, scope, null, activity, null, null)
+                    } else {
+                        am.getAuthToken(googleAccount, scope, null, false, null, null)
+                    }
+                    val freshBundle = freshFuture.getResult(45, TimeUnit.SECONDS)
+                    val freshToken = freshBundle?.getString(AccountManager.KEY_AUTHTOKEN)?.takeIf { it.isNotBlank() } ?: firstToken
+                    // Yeni alınan tek kullanımlık token'ın da önbellekte kalmasını önle
+                    am.invalidateAuthToken("com.google", freshToken)
+
+                    if (freshToken.startsWith("https://") || freshToken.startsWith("http://")) {
+                        return@withContext freshToken
+                    }
                 }
+
                 @Suppress("DEPRECATION")
                 val keyIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    bundle?.getParcelable(AccountManager.KEY_INTENT, Intent::class.java)
+                    firstBundle?.getParcelable(AccountManager.KEY_INTENT, Intent::class.java)
                 } else {
-                    bundle?.getParcelable(AccountManager.KEY_INTENT) as? Intent
+                    firstBundle?.getParcelable(AccountManager.KEY_INTENT) as? Intent
                 }
                 if (keyIntent != null && pendingWebLoginRecoveryIntent == null) {
                     pendingWebLoginRecoveryIntent = keyIntent
-                }
-            } catch (_: Throwable) {
-            }
-        }
-
-        // 2. Yedek: GoogleAuthUtil.getToken
-        for (scope in scopesToTry) {
-            try {
-                val tokenUrl = GoogleAuthUtil.getToken(appCtx, googleAccount, scope)
-                if (!tokenUrl.isNullOrBlank() && (tokenUrl.startsWith("https://") || tokenUrl.startsWith("http://"))) {
-                    pendingWebLoginRecoveryIntent = null
-                    return@withContext tokenUrl
-                }
-            } catch (recoverable: UserRecoverableAuthException) {
-                if (pendingWebLoginRecoveryIntent == null) {
-                    pendingWebLoginRecoveryIntent = recoverable.intent
                 }
             } catch (_: Throwable) {
             }
@@ -488,13 +497,10 @@ object CloudManager {
                     addOrUpdateAccount(appCtx, updated)
                     return@withContext token
                 }
-            } catch (recoverable: UserRecoverableAuthException) {
-                val comp = recoverable.intent?.component?.className ?: ""
-                if (!comp.contains("GrantCredentialsPermission", ignoreCase = true)) {
-                    pendingRecoveryIntent = recoverable.intent
-                    return@withContext ""
-                }
             } catch (_: Throwable) {
+                // Özel imzalı APK'larda GoogleAuthUtil UserRecoverableAuthException (UNREGISTERED_ON_API_CONSOLE)
+                // döndürdüğü için kullanıcıyı çalışmayan Play Services penceresine sokmak yerine doğrudan
+                // taze MergeSession (weblogin) köprüsüyle şifresiz bağlantı kurulur.
             }
         }
 
