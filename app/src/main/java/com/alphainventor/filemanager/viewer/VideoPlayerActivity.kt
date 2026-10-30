@@ -52,7 +52,6 @@ import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.SeekParameters
-import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -278,7 +277,7 @@ class VideoPlayerActivity : AppCompatActivity() {
         binding.exoPlayerView.visibility = View.VISIBLE
         binding.exoPlayerView.clipChildren = false
         binding.exoPlayerView.clipToPadding = false
-        binding.exoPlayerView.findViewById<View>(androidx.media3.ui.R.id.exo_content_frame)?.apply {
+        (binding.exoPlayerView.getChildAt(0) as? ViewGroup)?.apply {
             clipChildren = false
             clipToPadding = false
         }
@@ -326,11 +325,8 @@ class VideoPlayerActivity : AppCompatActivity() {
         }
 
         // Orijinal APK (ExoPlayer 2.18 ProgressiveMediaSource) ile birebir:
-        // MKV Cues anahtar kare tablosunu bozan CBR bayrağı kapalı ve Media3 1.3.1'in MKV sarma sırasında
-        // takılmaya yol açan SubtitleTranscodingExtractor katmanı devre dışı.
-        @Suppress("DEPRECATION")
+        // MKV Cues anahtar kare tablosunu bozan CBR bayrağı kapalı.
         val extractorsFactory = DefaultExtractorsFactory()
-            .setTextTrackTranscodingEnabled(false)
 
         val okHttpFactory = OkHttpDataSource.Factory(CloudManager.httpClient).apply {
             if (authToken.isNotBlank() && !authToken.startsWith("DEMO_")) {
@@ -339,19 +335,6 @@ class VideoPlayerActivity : AppCompatActivity() {
         }
         val dataSourceFactory = DefaultDataSource.Factory(this, okHttpFactory)
         val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory, extractorsFactory)
-
-        val trackSelector = DefaultTrackSelector(this).apply {
-            val langTag = Locale.getDefault().toLanguageTag()
-            setParameters(
-                buildUponParameters()
-                    .setPreferredAudioLanguage(langTag)
-                    .setPreferredTextLanguage(langTag)
-                    .setSelectUndeterminedTextLanguage(true)
-                    .setExceedVideoConstraintsIfNecessary(true)
-                    .setExceedAudioConstraintsIfNecessary(true)
-                    .setExceedRendererCapabilitiesIfNecessary(true)
-            )
-        }
 
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
@@ -365,10 +348,15 @@ class VideoPlayerActivity : AppCompatActivity() {
             .build()
 
         exoPlayer = ExoPlayer.Builder(this, renderersFactory)
-            .setTrackSelector(trackSelector)
             .setMediaSourceFactory(mediaSourceFactory)
             .setLoadControl(loadControl)
             .build().also { player ->
+                val langTag = Locale.getDefault().toLanguageTag()
+                player.trackSelectionParameters = player.trackSelectionParameters
+                    .buildUpon()
+                    .setPreferredAudioLanguage(langTag)
+                    .setPreferredTextLanguage(langTag)
+                    .build()
                 // AV1 ve yüksek çözünürlüklü MKV'lerde ileri/geri sarmanın anında anahtar kareye (keyframe)
                 // oturması ve yüzlerce ara kareyi çözmeye çalışıp takılmaması için CLOSEST_SYNC:
                 player.setSeekParameters(SeekParameters.CLOSEST_SYNC)
@@ -842,7 +830,8 @@ class VideoPlayerActivity : AppCompatActivity() {
         return if (usingPlatformFallback) {
             binding.platformVideoView
         } else {
-            binding.exoPlayerView.findViewById<View>(androidx.media3.ui.R.id.exo_content_frame)
+            (binding.exoPlayerView.videoSurfaceView?.parent as? View)
+                ?: binding.exoPlayerView.getChildAt(0)
                 ?: binding.exoPlayerView
         }
     }

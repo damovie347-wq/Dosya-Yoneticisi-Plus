@@ -773,7 +773,7 @@ class CloudAccountsActivity : AppCompatActivity() {
 
             var mergeRetryAttempted = false
 
-            fun evaluateAndProcessOAuthPage(view: WebView?, allowReveal: Boolean = false) {
+            fun evaluateAndProcessOAuthPage(view: WebView?, allowReveal: Boolean): Unit {
                 val wv = view ?: webViewRef ?: return
                 if (codeHandled) return
                 wv.evaluateJavascript(sanitizeAndAutomateJs) { rawResult ->
