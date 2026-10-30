@@ -43,18 +43,59 @@
         android:textStyle="normal"
         android:visibility="gone" />
 
-    <!-- Basılı Tutunca 2X Hızlı Oynatma Rozeti -->
+    <!-- Orijinal activity_videoplayer.xml (@id/center_overlay): Dikey Ses / Parlaklık Çubuğu -->
+    <FrameLayout
+        android:id="@+id/centerGestureOverlay"
+        android:layout_width="56dp"
+        android:layout_height="160dp"
+        android:layout_gravity="center"
+        android:background="@drawable/bg_player_control_popup"
+        android:padding="8dp"
+        android:visibility="gone">
+
+        <ProgressBar
+            android:id="@+id/verticalProgressBar"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="6dp"
+            android:layout_height="104dp"
+            android:layout_gravity="top|center_horizontal"
+            android:layout_marginTop="6dp"
+            android:max="100"
+            android:progress="50"
+            android:progressDrawable="@drawable/vertical_progress_bar" />
+
+        <ImageView
+            android:id="@+id/ivGestureIcon"
+            android:layout_width="24dp"
+            android:layout_height="24dp"
+            android:layout_gravity="bottom|center_horizontal"
+            android:layout_marginBottom="4dp"
+            android:src="@drawable/ic_vp_volume_on" />
+    </FrameLayout>
+
+    <!-- Orijinal activity_videoplayer.xml (@id/icon_splash): Orta Oynat / Duraklat Animasyon İkonu -->
+    <ImageView
+        android:id="@+id/iconSplash"
+        android:layout_width="64dp"
+        android:layout_height="64dp"
+        android:layout_gravity="center"
+        android:background="@drawable/btn_circular"
+        android:padding="14dp"
+        android:src="@drawable/ic_vp_play"
+        android:visibility="gone" />
+
+    <!-- Basılı Tutunca 2X Hızlı Oynatma Rozeti (bg_player_control_popup) -->
     <TextView
         android:id="@+id/tvFastPlay2xBadge"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="top|center_horizontal"
         android:layout_marginTop="68dp"
-        android:background="#99000000"
-        android:paddingStart="12dp"
-        android:paddingTop="4dp"
-        android:paddingEnd="12dp"
-        android:paddingBottom="4dp"
+        android:background="@drawable/bg_player_control_popup"
+        android:paddingStart="14dp"
+        android:paddingTop="6dp"
+        android:paddingEnd="14dp"
+        android:paddingBottom="6dp"
         android:text="2X ▶▶"
         android:textColor="#FFFFFF"
         android:textSize="14sp"
@@ -70,7 +111,7 @@
         android:indeterminateTint="#80CBC4"
         android:visibility="gone" />
 
-    <!-- Orijinal Dosya Yöneticisi + 3.6.7 Video Oynatıcı Arayüzü -->
+    <!-- Orijinal Dosya Yöneticisi + 3.6.7 Video Oynatıcı Arayüzü (video_playback_control_view.xml) -->
     <RelativeLayout
         android:id="@+id/playerControlsOverlay"
         android:layout_width="match_parent"
@@ -82,7 +123,7 @@
             android:layout_width="match_parent"
             android:layout_height="56dp"
             android:layout_alignParentTop="true"
-            android:background="#66000000"
+            android:background="#88000000"
             android:gravity="center_vertical"
             android:orientation="horizontal"
             android:paddingStart="6dp"
@@ -142,31 +183,32 @@
             android:layout_alignParentBottom="true"
             android:orientation="vertical">
 
-            <!-- İlerleme Çubuğunun Sağ Üstündeki Ses İzi (🎵), Altyazı (💬), Kilit (🔒) ve Döndürme (🔄) İkonları (Video 01:13 ??) -->
+            <!-- Orijinal APK @id/floating_buttons: Dairesel (btn_circular) Yüzen Butonlar -->
             <LinearLayout
+                android:id="@+id/llFloatingButtons"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:gravity="end|center_vertical"
                 android:orientation="horizontal"
                 android:paddingEnd="10dp"
-                android:paddingBottom="4dp">
+                android:paddingBottom="6dp">
 
                 <ImageButton
                     android:id="@+id/btnQuickAudioTrack"
                     android:layout_width="44dp"
                     android:layout_height="44dp"
-                    android:layout_marginEnd="4dp"
-                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:layout_marginEnd="8dp"
+                    android:background="@drawable/btn_circular"
                     android:contentDescription="Ses İzi Seç"
                     android:padding="10dp"
-                    android:src="@drawable/ic_vp_volume_on" />
+                    android:src="@drawable/ic_audiotrack" />
 
                 <ImageButton
                     android:id="@+id/btnQuickSubtitleTrack"
                     android:layout_width="44dp"
                     android:layout_height="44dp"
-                    android:layout_marginEnd="4dp"
-                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:layout_marginEnd="8dp"
+                    android:background="@drawable/btn_circular"
                     android:contentDescription="Altyazı Seç"
                     android:padding="10dp"
                     android:src="@drawable/ic_vp_subtitles" />
@@ -175,27 +217,27 @@
                     android:id="@+id/btnLockControls"
                     android:layout_width="44dp"
                     android:layout_height="44dp"
-                    android:layout_marginEnd="4dp"
-                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:layout_marginEnd="8dp"
+                    android:background="@drawable/btn_circular"
                     android:contentDescription="Kilitle"
                     android:padding="10dp"
                     android:src="@drawable/ic_vp_lock" />
 
                 <ImageButton
-                    android:id="@+id/btnRotateScreen"
+                    android:id="@+id/btnFloatingExpand"
                     android:layout_width="44dp"
                     android:layout_height="44dp"
-                    android:background="?attr/selectableItemBackgroundBorderless"
-                    android:contentDescription="Döndür"
+                    android:background="@drawable/btn_circular"
+                    android:contentDescription="Tam Ekran / En-Boy"
                     android:padding="10dp"
-                    android:src="@drawable/ic_vp_rotate" />
+                    android:src="@drawable/ic_expand_all" />
             </LinearLayout>
 
-            <!-- Yarı Şeffaf Alt Kutu: Seekbar + Açılır Ek Kontroller + Ana Vektör Butonlar -->
+            <!-- Yarı Şeffaf Alt Kutu (#88000000): Seekbar + Açılır Satır 1 + Ana Satır 2 -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:background="#80000000"
+                android:background="#88000000"
                 android:orientation="vertical"
                 android:paddingStart="12dp"
                 android:paddingTop="6dp"
@@ -243,11 +285,12 @@
                         android:textSize="13.5sp" />
                 </LinearLayout>
 
-                <!-- Açılır 2. Satır: Karıştır (🔀) | Tekrar (🔁) | 1X Hız | Ses/Altyazı (💬) -->
+                <!-- Orijinal APK @id/control_buttons_line1 (Açılır Ek Kontroller Satırı):
+                     Karıştır (🔀) | 10sn Geri (↺10) | Hız (1.0x) | 10sn İleri (↻10) | Tekrar (1/🔁/🔂) -->
                 <LinearLayout
                     android:id="@+id/llExtraVideoControls"
                     android:layout_width="match_parent"
-                    android:layout_height="44dp"
+                    android:layout_height="46dp"
                     android:gravity="center"
                     android:orientation="horizontal"
                     android:visibility="gone">
@@ -259,20 +302,19 @@
                         android:layout_weight="1"
                         android:alpha="0.7"
                         android:background="?attr/selectableItemBackgroundBorderless"
-                        android:contentDescription="Karıştır / Ses"
+                        android:contentDescription="Karıştır"
                         android:padding="10dp"
                         android:src="@drawable/ic_vp_shuffle" />
 
                     <ImageButton
-                        android:id="@+id/btnRepeatToggle"
+                        android:id="@+id/btnExtraRewind10"
                         android:layout_width="0dp"
                         android:layout_height="44dp"
                         android:layout_weight="1"
-                        android:alpha="0.7"
                         android:background="?attr/selectableItemBackgroundBorderless"
-                        android:contentDescription="Tekrarla"
+                        android:contentDescription="10 Saniye Geri"
                         android:padding="10dp"
-                        android:src="@drawable/ic_vp_repeat_off" />
+                        android:src="@drawable/ic_vp_rewind_10" />
 
                     <TextView
                         android:id="@+id/btnPlaybackSpeed"
@@ -281,10 +323,31 @@
                         android:layout_weight="1"
                         android:background="?attr/selectableItemBackgroundBorderless"
                         android:gravity="center"
-                        android:text="1X"
+                        android:text="1.0x"
                         android:textColor="#FFFFFF"
-                        android:textSize="15sp"
+                        android:textSize="14.5sp"
                         android:textStyle="bold" />
+
+                    <ImageButton
+                        android:id="@+id/btnExtraForward10"
+                        android:layout_width="0dp"
+                        android:layout_height="44dp"
+                        android:layout_weight="1"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="10 Saniye İleri"
+                        android:padding="10dp"
+                        android:src="@drawable/ic_vp_forward_10" />
+
+                    <ImageButton
+                        android:id="@+id/btnRepeatToggle"
+                        android:layout_width="0dp"
+                        android:layout_height="44dp"
+                        android:layout_weight="1"
+                        android:alpha="0.9"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="Tekrarla"
+                        android:padding="10dp"
+                        android:src="@drawable/ic_play_one" />
 
                     <ImageButton
                         android:id="@+id/btnTrackSelector"
@@ -294,10 +357,12 @@
                         android:background="?attr/selectableItemBackgroundBorderless"
                         android:contentDescription="Altyazı ve Ses İzi"
                         android:padding="10dp"
-                        android:src="@drawable/ic_vp_subtitles" />
+                        android:src="@drawable/ic_vp_subtitles"
+                        android:visibility="gone" />
                 </LinearLayout>
 
-                <!-- Ana Alt Kontrol Satırı -->
+                <!-- Orijinal APK @id/control_buttons_line2 (Ana Alt Kontrol Satırı):
+                     En-Boy (⛶) | Önceki (|◀) | Oynat/Duraklat (▶/⏸) | Sonraki (▶|) | Diğer Kontroller (▲/▼) | Ekran Döndür (🔄) -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="52dp"
@@ -320,7 +385,7 @@
                         android:layout_height="48dp"
                         android:layout_weight="1"
                         android:background="?attr/selectableItemBackgroundBorderless"
-                        android:contentDescription="Önceki / -10 sn"
+                        android:contentDescription="Önceki Video"
                         android:padding="10dp"
                         android:src="@drawable/ic_vp_prev" />
 
@@ -341,7 +406,7 @@
                         android:layout_height="48dp"
                         android:layout_weight="1"
                         android:background="?attr/selectableItemBackgroundBorderless"
-                        android:contentDescription="Sonraki / +10 sn"
+                        android:contentDescription="Sonraki Video"
                         android:padding="10dp"
                         android:src="@drawable/ic_vp_next" />
 
@@ -353,23 +418,34 @@
                         android:background="?attr/selectableItemBackgroundBorderless"
                         android:contentDescription="Diğer Kontroller"
                         android:padding="11dp"
-                        android:src="@drawable/ic_vp_rotate_ccw" />
+                        android:rotation="180"
+                        android:src="@drawable/ic_vp_expand_down" />
+
+                    <ImageButton
+                        android:id="@+id/btnRotateScreen"
+                        android:layout_width="0dp"
+                        android:layout_height="48dp"
+                        android:layout_weight="1"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="Ekranı Döndür"
+                        android:padding="11dp"
+                        android:src="@drawable/ic_vp_rotate" />
                 </LinearLayout>
             </LinearLayout>
         </LinearLayout>
     </RelativeLayout>
 
-    <!-- Kilit Açma Butonu -->
+    <!-- Kilit Açma Butonu (Orijinal APK @id/unlock_button & ic_unlock_circle) -->
     <ImageButton
         android:id="@+id/btnUnlockOverlay"
         android:layout_width="52dp"
         android:layout_height="52dp"
         android:layout_gravity="bottom|end"
         android:layout_margin="24dp"
-        android:background="#AA000000"
+        android:background="@drawable/btn_circular"
         android:contentDescription="Kilidi Aç"
         android:padding="12dp"
-        android:src="@drawable/ic_vp_lock"
+        android:src="@drawable/ic_unlock_circle"
         android:visibility="gone" />
 
 </FrameLayout>

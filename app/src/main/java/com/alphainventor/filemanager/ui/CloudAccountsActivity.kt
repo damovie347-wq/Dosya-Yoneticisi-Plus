@@ -1,36 +1,24 @@
 package com.alphainventor.filemanager.ui
 
 import android.accounts.AccountManager
-import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
-import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
 import android.view.Gravity
 import android.view.KeyEvent
-import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
-import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
-import android.webkit.CookieManager
-import android.webkit.WebResourceRequest
-import android.webkit.WebSettings
-import android.webkit.WebView
-import android.webkit.WebViewClient
-import android.widget.Button
 import android.widget.EditText
-import android.widget.FrameLayout
 import android.widget.GridLayout
 import android.widget.ImageButton
 import android.widget.ImageView
@@ -60,30 +48,24 @@ import com.alphainventor.filemanager.util.AppSettings
 import com.alphainventor.filemanager.viewer.ImageViewerActivity
 import com.alphainventor.filemanager.viewer.MusicPlayerActivity
 import com.alphainventor.filemanager.viewer.VideoPlayerActivity
+import com.google.android.gms.common.AccountPicker
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.net.InetSocketAddress
-import java.net.ServerSocket
-import java.net.URLEncoder
 import java.util.UUID
 
 /**
  * Orijinal Dosya Yöneticisi + 3.6.7 Bulut Ekranı (Google Drive + MEGA + Çoklu Bulut):
- * 1) "+ Bir bulut konumu ekle -> Google Drive" tıklandığında doğrudan Android Sistem Hesap Seçicisini
- *    (AccountManager.newChooseAccountIntent) açarak seçilen Google hesabına otomatik UID görünürlüğü kazandırır.
- * 2) Seçilen Google hesabı için:
- *    - E-posta / Şifre sorma ekranı ("Oturum açın - E-posta adresi veya telefon") tamamen ortadan kaldırıldı:
- *      Cihazdaki açık Google hesabından "weblogin:service=gaia&continue=..." (MergeSession) köprüsüyle
- *      tek izin onayıyla şifresiz otomatik oturum açılır.
- *    - MergeSession çerez aktarımı tamamlanana kadar kesinlikle yarıda kesilmez; ardından OAuth onay sayfasındaki
- *      "Devam / İzin ver" butonu otomatik tıklanarak Refresh Token + Access Token kaydedilir.
- * 3) MEGA (mega.nz) hesap ekleme: Doğrudan API v1/v2 ve otomatik e-posta/şifre doldurmalı Web Oturum Senkronizasyonu.
- * 4) Sağ üstteki BÜYÜTEÇ (🔍) ikonuna basınca tüm bağlı Google Drive, MEGA ve diğer bulut hesaplarında paralel arama yapar.
+ * 1) "+ Bir bulut konumu ekle -> Google Drive" tıklandığında orijinal APK'daki (Lax/q7/a;->c() & MainActivity$s)
+ *    gibi doğrudan sistem AccountPicker penceresini açar.
+ * 2) Kullanıcı cihazdaki Google hesabını seçtiğinde:
+ *    - Asla tarayıcıya veya manuel e-posta/şifre WebView ekranına düşmez!
+ *    - Doğrudan GoogleAuthUtil.getToken("oauth2: https://www.googleapis.com/auth/drive") çağrılır.
+ *    - İlk seferde izin gerekiyorsa yerel Google Play Hizmetleri izin penceresi (UserRecoverableAuthException.intent) açılır;
+ *      izin verilince hesap eklenir ve Drive içindeki fotoğraf/videolar görüntülenir.
+ * 3) MEGA (mega.nz) hesap ekleme:
+ *    - Doğrudan resmi MEGA JSON-RPC API + düzeltilmiş RSA csid çözümü ile çalışır; çalışmayan web sayfasına yönlendirmez.
  */
 class CloudAccountsActivity : AppCompatActivity() {
 
@@ -94,13 +76,15 @@ class CloudAccountsActivity : AppCompatActivity() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var activeFilter: CloudSearchFilter = CloudSearchFilter.ALL
     private var unifiedSearchJob: Job? = null
-    private var loopbackServerJob: Job? = null
-    private var activeLoopbackSocket: ServerSocket? = null
     private var pendingGoogleAccountForAuth: CloudAccount? = null
 
     private var searchUiState: Int = 0
     private var searchHistoryContainer: LinearLayout? = null
 
+    /**
+     * Orijinal APK'daki (MainActivity->onActivityResult requestCode=3) AccountPicker sonucu:
+     * Seçilen "authAccount" (AccountManager.KEY_ACCOUNT_NAME) değerini alır ve doğrudan yerel OAuth akışına sokar.
+     */
     private val googleAccountPickerLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -112,46 +96,52 @@ class CloudAccountsActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Orijinal APK'daki (MainActivity->onActivityResult requestCode=11) yerel Google Drive izin sonucu:
+     * Kullanıcı "İzin ver" dediğinde GoogleAuthUtil üzerinden token'ı alır, kotayı günceller ve Drive gezginini açar.
+     */
     private val googlePlayConsentLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         val acc = pendingGoogleAccountForAuth
+        pendingGoogleAccountForAuth = null
         if (result.resultCode == Activity.RESULT_OK && acc != null) {
             lifecycleScope.launch {
-                val token = CloudManager.resolveGoogleDriveToken(this@CloudAccountsActivity, acc, forceRefresh = true)
+                val token = CloudManager.resolveGoogleDriveToken(
+                    this@CloudAccountsActivity,
+                    acc,
+                    forceRefresh = false
+                )
                 if (token.isNotBlank()) {
-                    CloudManager.fetchGoogleDriveQuota(this@CloudAccountsActivity, acc.copy(accessToken = token))
+                    val updated = CloudManager.fetchGoogleDriveQuota(
+                        this@CloudAccountsActivity,
+                        acc.copy(accessToken = token)
+                    )
                     refreshAccountsList()
+                    Toast.makeText(
+                        this@CloudAccountsActivity,
+                        "✓ Google Drive bağlandı: ${updated.emailOrName}",
+                        Toast.LENGTH_SHORT
+                    ).show()
                     launchExplorerForAccount(
-                        CloudManager.getAccounts(this@CloudAccountsActivity).firstOrNull { it.id == acc.id } ?: acc
+                        CloudManager.getAccounts(this@CloudAccountsActivity).firstOrNull { it.id == updated.id } ?: updated
                     )
                 } else {
-                    startGoogleDriveOAuthFlow(existingAccount = acc, autoOpenWhenConnected = true)
+                    val nextRecovery = CloudManager.pendingRecoveryIntent
+                    if (nextRecovery != null) {
+                        pendingGoogleAccountForAuth = acc
+                        googlePlayConsentLauncher.launch(nextRecovery)
+                    } else {
+                        Toast.makeText(
+                            this@CloudAccountsActivity,
+                            CloudManager.lastCloudErrorMessage ?: "Google Drive erişim anahtarı alınamadı.",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
                 }
             }
-        }
-    }
-
-    /**
-     * Cihazdaki açık Google hesabından şifresiz MergeSession oturum belirteci almak için
-     * sistemin tek seferlik "İzin ver" penceresi onaylandığında doğrudan şifresiz bağlantıyı tamamlar.
-     */
-    private val googleWebLoginConsentLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        val acc = pendingGoogleAccountForAuth
-        if (result.resultCode == Activity.RESULT_OK && acc != null) {
-            startGoogleDriveOAuthFlow(
-                existingAccount = acc,
-                autoOpenWhenConnected = true,
-                skipWebLoginConsentPrompt = true
-            )
         } else if (acc != null) {
-            Toast.makeText(
-                this,
-                "Google hesabı erişim izni verilmedi.",
-                Toast.LENGTH_SHORT
-            ).show()
+            Toast.makeText(this, "Google Drive erişim izni verilmedi.", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -173,7 +163,7 @@ class CloudAccountsActivity : AppCompatActivity() {
         if (!autoAuthAccountId.isNullOrBlank()) {
             val acc = CloudManager.getAccounts(this).firstOrNull { it.id == autoAuthAccountId }
             if (acc != null) {
-                startGoogleDriveOAuthFlow(existingAccount = acc, autoOpenWhenConnected = true)
+                openCloudAccountExplorer(acc)
             }
         }
     }
@@ -186,7 +176,6 @@ class CloudAccountsActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         mainHandler.removeCallbacksAndMessages(null)
-        stopLoopbackServer()
         super.onDestroy()
     }
 
@@ -241,19 +230,37 @@ class CloudAccountsActivity : AppCompatActivity() {
     }
 
     /**
-     * Önce Android Sistem Hesap Seçicisini (AccountManager.newChooseAccountIntent) başlatır.
-     * Bu sistem seçicisi, seçilen "com.google" hesabına uygulamamızın UID'si için otomatik olarak
-     * AccountManager görünürlük izni (VISIBILITY_VISIBLE) verir; böylece cihazda açık olan hesaba
-     * e-posta veya şifre yazmadan doğrudan bağlanılır!
+     * Orijinal APK'daki (Lax/q7/a;->c() & Lax/T5/a;->a()) sistem AccountPicker çağrısı.
+     * Cihazdaki Google hesaplarını listeler; tarayıcıya veya e-posta/şifre ekranına düşmez.
      */
     private fun launchNativeGoogleAccountPicker(preselectedEmail: String? = null) {
+        val selectedAcc = if (!preselectedEmail.isNullOrBlank()) {
+            android.accounts.Account(preselectedEmail, "com.google")
+        } else null
+
         try {
             @Suppress("DEPRECATION")
-            val systemChooseIntent = AccountManager.newChooseAccountIntent(
-                if (!preselectedEmail.isNullOrBlank()) android.accounts.Account(preselectedEmail, "com.google") else null,
+            val gmsChooseIntent = AccountPicker.newChooseAccountIntent(
+                selectedAcc,
                 null,
                 arrayOf("com.google"),
                 true,
+                null,
+                null,
+                null,
+                null
+            )
+            googleAccountPickerLauncher.launch(gmsChooseIntent)
+            return
+        } catch (_: Throwable) {
+        }
+
+        try {
+            @Suppress("DEPRECATION")
+            val systemChooseIntent = AccountManager.newChooseAccountIntent(
+                selectedAcc,
+                null,
+                arrayOf("com.google"),
                 null,
                 null,
                 null,
@@ -265,24 +272,31 @@ class CloudAccountsActivity : AppCompatActivity() {
         }
 
         try {
-            val gmsIntent = Intent("com.google.android.gms.common.account.CHOOSE_ACCOUNT").apply {
+            val rawIntent = Intent("com.google.android.gms.common.account.CHOOSE_ACCOUNT").apply {
                 setPackage("com.google.android.gms")
                 putExtra("allowableAccountTypes", arrayOf("com.google"))
                 putExtra("alwaysPromptForAccount", true)
-                if (!preselectedEmail.isNullOrBlank()) {
-                    putExtra("selectedAccount", android.accounts.Account(preselectedEmail, "com.google"))
+                if (selectedAcc != null) {
+                    putExtra("selectedAccount", selectedAcc)
                 }
             }
-            if (gmsIntent.resolveActivity(packageManager) != null) {
-                googleAccountPickerLauncher.launch(gmsIntent)
-                return
-            }
-        } catch (_: Throwable) {
+            googleAccountPickerLauncher.launch(rawIntent)
+        } catch (e: Throwable) {
+            Toast.makeText(
+                this,
+                "Cihaz hesap seçicisi açılamadı: ${e.localizedMessage}",
+                Toast.LENGTH_SHORT
+            ).show()
         }
-
-        startGoogleDriveOAuthFlow(existingAccount = null, autoOpenWhenConnected = true)
     }
 
+    /**
+     * AccountPicker'dan hesap seçildiğinde:
+     * 1) Hesabı kaydeder.
+     * 2) Doğrudan CloudManager.resolveGoogleDriveToken ile cihazdaki hesaptan OAuth2 Drive token'ı ister.
+     * 3) İlk seferde izin gerekiyorsa (pendingRecoveryIntent != null), yerel Play Services izin penceresini açar.
+     * 4) İzin verildiyse doğrudan Drive gezginini açar.
+     */
     private fun onGoogleAccountPickedFromPlayServices(email: String) {
         val existing = CloudManager.getAccounts(this).firstOrNull {
             it.provider == CloudProviderType.GOOGLE_DRIVE && it.emailOrName.equals(email, ignoreCase = true)
@@ -296,19 +310,34 @@ class CloudAccountsActivity : AppCompatActivity() {
         CloudManager.addOrUpdateAccount(this, savedAccount)
         refreshAccountsList()
 
-        if (savedAccount.accessToken.isNotBlank() || savedAccount.refreshToken.isNotBlank()) {
-            lifecycleScope.launch {
-                val token = CloudManager.resolveGoogleDriveToken(this@CloudAccountsActivity, savedAccount, forceRefresh = false)
-                if (token.isNotBlank()) {
-                    val updated = CloudManager.fetchGoogleDriveQuota(this@CloudAccountsActivity, savedAccount.copy(accessToken = token))
-                    refreshAccountsList()
-                    launchExplorerForAccount(updated)
+        lifecycleScope.launch {
+            val token = CloudManager.resolveGoogleDriveToken(
+                this@CloudAccountsActivity,
+                savedAccount,
+                forceRefresh = false
+            )
+            if (token.isNotBlank()) {
+                val updated = CloudManager.fetchGoogleDriveQuota(
+                    this@CloudAccountsActivity,
+                    savedAccount.copy(accessToken = token)
+                )
+                refreshAccountsList()
+                Toast.makeText(
+                    this@CloudAccountsActivity,
+                    "✓ Google Drive bağlandı: ${updated.emailOrName}",
+                    Toast.LENGTH_SHORT
+                ).show()
+                launchExplorerForAccount(updated)
+            } else {
+                val recovery = CloudManager.pendingRecoveryIntent
+                if (recovery != null) {
+                    pendingGoogleAccountForAuth = savedAccount
+                    googlePlayConsentLauncher.launch(recovery)
                 } else {
-                    startGoogleDriveOAuthFlow(existingAccount = savedAccount, autoOpenWhenConnected = true)
+                    // Cihaz izin penceresi FileExplorerActivity içinde de tetiklenebilir
+                    launchExplorerForAccount(savedAccount)
                 }
             }
-        } else {
-            startGoogleDriveOAuthFlow(existingAccount = savedAccount, autoOpenWhenConnected = true)
         }
     }
 
@@ -500,22 +529,25 @@ class CloudAccountsActivity : AppCompatActivity() {
                 .firstOrNull { it.id == account.id } ?: account
 
             if (latestAcc.provider == CloudProviderType.GOOGLE_DRIVE) {
-                if (latestAcc.accessToken.isBlank() && latestAcc.refreshToken.isBlank()) {
-                    startGoogleDriveOAuthFlow(existingAccount = latestAcc, autoOpenWhenConnected = true)
-                    return@launch
-                }
-                val token = CloudManager.resolveGoogleDriveToken(this@CloudAccountsActivity, latestAcc, forceRefresh = false)
+                val token = CloudManager.resolveGoogleDriveToken(
+                    this@CloudAccountsActivity,
+                    latestAcc,
+                    forceRefresh = false
+                )
                 val recovery = CloudManager.pendingRecoveryIntent
                 if (recovery != null) {
                     pendingGoogleAccountForAuth = latestAcc
                     googlePlayConsentLauncher.launch(recovery)
                     return@launch
                 }
-                if (token.isBlank() || CloudManager.needsWebOAuthFallbackForAccount != null) {
-                    startGoogleDriveOAuthFlow(existingAccount = latestAcc, autoOpenWhenConnected = true)
+                if (token.isNotBlank()) {
+                    val updated = CloudManager.getAccounts(this@CloudAccountsActivity)
+                        .firstOrNull { it.id == latestAcc.id } ?: latestAcc.copy(accessToken = token)
+                    launchExplorerForAccount(updated)
                     return@launch
                 }
             }
+
             val updated = CloudManager.getAccounts(this@CloudAccountsActivity)
                 .firstOrNull { it.id == latestAcc.id } ?: latestAcc
             launchExplorerForAccount(updated)
@@ -707,6 +739,32 @@ class CloudAccountsActivity : AppCompatActivity() {
 
     private fun openCloudItemInternally(item: FileItem, account: CloudAccount?) {
         lifecycleScope.launch {
+            if (account?.provider == CloudProviderType.MEGA) {
+                Toast.makeText(this@CloudAccountsActivity, "MEGA dosyası hazırlanıyor...", Toast.LENGTH_SHORT).show()
+                val localFile = CloudManager.downloadMegaFileToCache(this@CloudAccountsActivity, account, item)
+                if (localFile != null && localFile.exists()) {
+                    val localItem = item.copy(path = localFile.absolutePath, downloadUrl = localFile.absolutePath)
+                    when {
+                        localItem.isVideo -> startActivity(Intent(this@CloudAccountsActivity, VideoPlayerActivity::class.java).apply {
+                            putExtra("VIDEO_URL", localFile.absolutePath)
+                            putExtra("VIDEO_TITLE", item.name)
+                        })
+                        localItem.isAudio -> startActivity(Intent(this@CloudAccountsActivity, MusicPlayerActivity::class.java).apply {
+                            putExtra("AUDIO_URL", localFile.absolutePath)
+                            putExtra("AUDIO_TITLE", item.name)
+                        })
+                        localItem.isImage -> startActivity(Intent(this@CloudAccountsActivity, ImageViewerActivity::class.java).apply {
+                            putExtra("IMAGE_PATH", localFile.absolutePath)
+                            putExtra("IMAGE_TITLE", item.name)
+                        })
+                        else -> LocalFileRepository.openWithExternalChooser(this@CloudAccountsActivity, localItem, "")
+                    }
+                } else {
+                    Toast.makeText(this@CloudAccountsActivity, "MEGA dosyası indirilemedi.", Toast.LENGTH_SHORT).show()
+                }
+                return@launch
+            }
+
             val activeToken = if (account != null && account.provider == CloudProviderType.GOOGLE_DRIVE) {
                 CloudManager.resolveGoogleDriveToken(this@CloudAccountsActivity, account, forceRefresh = false)
             } else {
@@ -816,9 +874,8 @@ class CloudAccountsActivity : AppCompatActivity() {
 
     /**
      * MEGA (mega.nz) Hesap Ekleme Diyaloğu:
-     * 1) Doğrudan E-posta + Şifre ile API v1/v2 girişi (PBKDF2-HMAC-SHA512 + RSA + AES-CBC).
-     * 2) Doğrudan API yanıt vermezse veya 2FA/cihaz doğrulaması gerekiyorsa girilen e-posta ve şifreyi
-     *    otomatik doldurarak MEGA Web Oturum Senkronizasyonu ile hesabı ve dosyaları bağlar.
+     * Doğrudan E-posta + Şifre (ve gerekirse 2FA kodu) ile resmi MEGA API üzerinden bağlanır.
+     * Çalışmayan bir web sitesine yönlendirmez.
      */
     private fun showAddMegaAccountDialog(existingAccount: CloudAccount? = null) {
         val density = resources.displayMetrics.density
@@ -848,20 +905,47 @@ class CloudAccountsActivity : AppCompatActivity() {
             setSingleLine()
         }
 
+        val etMfa = EditText(this).apply {
+            hint = "2FA Doğrulama Kodu (6 Haneli Kod)"
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setSingleLine()
+            visibility = View.GONE
+        }
+
+        val tvError = TextView(this).apply {
+            textSize = 13f
+            setTextColor(Color.parseColor("#E53935"))
+            setPadding(0, (8 * density).toInt(), 0, 0)
+            visibility = View.GONE
+        }
+
+        val progressRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, (10 * density).toInt(), 0, 0)
+            visibility = View.GONE
+        }
+        val pb = ProgressBar(this, null, android.R.attr.progressBarStyleSmall)
+        val tvProgress = TextView(this).apply {
+            text = "MEGA hesabına bağlanılıyor..."
+            textSize = 13f
+            setTextColor(ThemeManager.getSecondaryTextColor(this@CloudAccountsActivity))
+            setPadding((10 * density).toInt(), 0, 0, 0)
+        }
+        progressRow.addView(pb)
+        progressRow.addView(tvProgress)
+
         layout.addView(tvInfo)
         layout.addView(etEmail)
         layout.addView(etPassword)
+        layout.addView(etMfa)
+        layout.addView(tvError)
+        layout.addView(progressRow)
 
         val dialog = AlertDialog.Builder(this)
             .setTitle("MEGA Hesabı Bağla")
             .setView(layout)
             .setPositiveButton("BAĞLAN", null)
-            .setNeutralButton("WEB İLE GİRİŞ") { d, _ ->
-                d.dismiss()
-                val emailHint = etEmail.text?.toString()?.trim().orEmpty()
-                val passHint = etPassword.text?.toString().orEmpty()
-                startMegaWebAuthFlow(emailHint, passHint, existingAccount)
-            }
             .setNegativeButton("İPTAL", null)
             .create()
 
@@ -869,804 +953,49 @@ class CloudAccountsActivity : AppCompatActivity() {
         dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.setOnClickListener {
             val email = etEmail.text?.toString()?.trim().orEmpty()
             val password = etPassword.text?.toString().orEmpty()
+            val mfaPin = etMfa.text?.toString()?.trim()?.takeIf { it.isNotEmpty() }
+
             if (email.isBlank() || password.isBlank()) {
-                Toast.makeText(this, "Lütfen MEGA e-posta ve şifrenizi girin.", Toast.LENGTH_SHORT).show()
+                tvError.text = "Lütfen MEGA e-posta ve şifrenizi girin."
+                tvError.visibility = View.VISIBLE
                 return@setOnClickListener
             }
+
+            tvError.visibility = View.GONE
+            progressRow.visibility = View.VISIBLE
             dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.isEnabled = false
-            Toast.makeText(this, "MEGA hesabına bağlanılıyor...", Toast.LENGTH_SHORT).show()
+
             lifecycleScope.launch {
                 val saved = CloudManager.authenticateMegaAccount(
                     context = this@CloudAccountsActivity,
                     email = email,
                     password = password,
-                    existingAccount = existingAccount
+                    existingAccount = existingAccount,
+                    mfaPin = mfaPin
                 )
+                progressRow.visibility = View.GONE
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.isEnabled = true
+
                 if (saved != null) {
                     dialog.dismiss()
                     refreshAccountsList()
-                    Toast.makeText(this@CloudAccountsActivity, "✓ MEGA bağlandı: ${saved.emailOrName}", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(
+                        this@CloudAccountsActivity,
+                        "✓ MEGA bağlandı: ${saved.emailOrName}",
+                        Toast.LENGTH_SHORT
+                    ).show()
                     launchExplorerForAccount(saved)
                 } else {
-                    dialog.dismiss()
-                    // Doğrudan API yerine kullanıcının girdiği e-posta ve şifreyi otomatik dolduran Web Oturumuna geç
-                    startMegaWebAuthFlow(email, password, existingAccount)
+                    if (CloudManager.lastMegaErrorCode == -26) {
+                        etMfa.visibility = View.VISIBLE
+                        etMfa.requestFocus()
+                    }
+                    tvError.text = CloudManager.lastCloudErrorMessage
+                        ?: "MEGA hesabına giriş yapılamadı. E-posta ve şifrenizi kontrol edin."
+                    tvError.visibility = View.VISIBLE
                 }
             }
         }
-    }
-
-    @SuppressLint("SetJavaScriptEnabled")
-    private fun startMegaWebAuthFlow(
-        emailHint: String = "",
-        passwordHint: String = "",
-        existingAccount: CloudAccount? = null
-    ) {
-        val dm = resources.displayMetrics
-        val density = dm.density
-        val dialogHeightPx = (dm.heightPixels * 0.85f).toInt().coerceAtLeast((380 * density).toInt())
-
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dialogHeightPx)
-            setBackgroundColor(Color.parseColor("#181818"))
-        }
-
-        val topBar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            val p = (12 * density).toInt()
-            setPadding(p, (8 * density).toInt(), p, (8 * density).toInt())
-            setBackgroundColor(Color.parseColor("#D9272E"))
-        }
-
-        val tvTitle = TextView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-            text = "MEGA Hesap Girişi (Otomatik Bağlanıyor...)"
-            textSize = 13.5f
-            setTypeface(typeface, Typeface.BOLD)
-            setTextColor(Color.WHITE)
-            isSingleLine = true
-        }
-
-        val btnCancel = Button(this).apply {
-            text = "KAPAT"
-            textSize = 12f
-            setTextColor(Color.WHITE)
-            setBackgroundColor(Color.TRANSPARENT)
-        }
-
-        topBar.addView(tvTitle)
-        topBar.addView(btnCancel)
-
-        var megaDialog: AlertDialog? = null
-        var synced = false
-
-        val escapedEmail = emailHint.replace("\\", "\\\\").replace("'", "\\'")
-        val escapedPass = passwordHint.replace("\\", "\\\\").replace("'", "\\'")
-
-        val webView = WebView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true
-            settings.databaseEnabled = true
-            settings.useWideViewPort = true
-            settings.loadWithOverviewMode = true
-            settings.userAgentString =
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
-        }
-
-        val autoFillAndExtractMegaJs = """
-            (function() {
-                try {
-                    var targetEmail = '$escapedEmail';
-                    var targetPass = '$escapedPass';
-                    if (targetEmail && targetPass && !window._megaAutoFilled) {
-                        var emailEl = document.querySelector('#login-name2, input[name="login-name2"], input[type="email"]');
-                        var passEl = document.querySelector('#login-password2, input[name="login-password2"], input[type="password"]');
-                        if (emailEl && passEl) {
-                            window._megaAutoFilled = true;
-                            var nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-                            if (nativeSetter) {
-                                nativeSetter.call(emailEl, targetEmail);
-                                nativeSetter.call(passEl, targetPass);
-                            } else {
-                                emailEl.value = targetEmail;
-                                passEl.value = targetPass;
-                            }
-                            emailEl.dispatchEvent(new Event('input', { bubbles: true }));
-                            emailEl.dispatchEvent(new Event('change', { bubbles: true }));
-                            passEl.dispatchEvent(new Event('input', { bubbles: true }));
-                            passEl.dispatchEvent(new Event('change', { bubbles: true }));
-                            setTimeout(function() {
-                                var loginBtn = document.querySelector('.login-button, button.login-button, button[type="submit"]');
-                                if (loginBtn) loginBtn.click();
-                            }, 350);
-                        }
-                    }
-
-                    if (!window.M || !window.M.d) return '';
-                    var nodes = window.M.d;
-                    var keys = Object.keys(nodes);
-                    if (keys.length === 0) return '';
-                    var rootId = window.M.RootID || '';
-                    var out = [];
-                    for (var i = 0; i < keys.length; i++) {
-                        var n = nodes[keys[i]];
-                        if (!n || (n.t !== 0 && n.t !== 1)) continue;
-                        if (!n.name) continue;
-                        var p = (n.p === rootId || !n.p) ? 'root' : String(n.p);
-                        out.push({
-                            h: String(n.h || keys[i]),
-                            p: p,
-                            n: String(n.name),
-                            t: Number(n.t || 0),
-                            s: Number(n.s || 0),
-                            ts: Number(n.ts || 0)
-                        });
-                    }
-                    if (out.length === 0 && !window.u_attr) return '';
-                    var email = (window.u_attr && window.u_attr.email) ? String(window.u_attr.email) : targetEmail;
-                    return JSON.stringify({
-                        email: email || 'MEGA Hesabı',
-                        used: Number(window.M.cstrg || 0),
-                        total: Number(window.M.mstrg || 21474836480),
-                        nodes: out
-                    });
-                } catch (e) {
-                    return '';
-                }
-            })();
-        """.trimIndent()
-
-        val pollRunnable = object : Runnable {
-            override fun run() {
-                if (synced || megaDialog?.isShowing != true) return
-                webView.evaluateJavascript(autoFillAndExtractMegaJs) { raw ->
-                    val unescaped = unescapeEvaluateJsString(raw)
-                    if (unescaped.startsWith("{") && unescaped.contains("\"nodes\"")) {
-                        try {
-                            val obj = JSONObject(unescaped)
-                            val nodesArr = obj.optJSONArray("nodes")
-                            if (nodesArr != null) {
-                                synced = true
-                                val saved = CloudManager.saveMegaWebSyncedAccountAndNodes(
-                                    context = this@CloudAccountsActivity,
-                                    email = obj.optString("email", emailHint.ifBlank { "MEGA Hesabı" }),
-                                    usedBytes = obj.optLong("used", 0L),
-                                    totalBytes = obj.optLong("total", 20L * 1024 * 1024 * 1024),
-                                    nodesJsonArrayString = nodesArr.toString(),
-                                    existingAccount = existingAccount
-                                )
-                                megaDialog?.dismiss()
-                                refreshAccountsList()
-                                Toast.makeText(
-                                    this@CloudAccountsActivity,
-                                    "✓ MEGA bağlandı: ${saved.emailOrName}",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                                launchExplorerForAccount(saved)
-                                return@evaluateJavascript
-                            }
-                        } catch (_: Exception) {
-                        }
-                    }
-                }
-                mainHandler.postDelayed(this, 1100L)
-            }
-        }
-
-        root.addView(topBar)
-        root.addView(webView)
-
-        megaDialog = AlertDialog.Builder(this)
-            .setView(root)
-            .create()
-
-        btnCancel.setOnClickListener { megaDialog.dismiss() }
-        megaDialog.show()
-        megaDialog.window?.let { win ->
-            win.clearFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
-            win.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
-            win.setLayout((dm.widthPixels * 0.94f).toInt(), dialogHeightPx)
-        }
-
-        webView.loadUrl("https://mega.nz/login")
-        mainHandler.postDelayed(pollRunnable, 1300L)
-    }
-
-    /**
-     * Cihazdaki açık Google hesabını (MergeSession weblogin köprüsü + Ana UI İş Parçacığı evaluateJavascript)
-     * kullanarak Google Drive OAuth 2.0 yetkilendirmesini E-POSTA / ŞİFRE SORMADAN tamamlar:
-     * 1) Sabit 127.0.0.1:53682 portu üzerinden deterministik `authUrl` oluşturur ve
-     *    `CloudManager.tryGetWebLoginMergeSessionUrl` ile `weblogin:service=gaia&continue=...` URL'sini alır.
-     * 2) Eğer cihazdaki Google hesabı için ilk kez sistem erişim izni ("İzin ver") gerekiyorsa
-     *    (`pendingWebLoginRecoveryIntent`), WebView açmadan önce sistem izin penceresini gösterir;
-     *    kullanıcı "İzin ver" dediğinde aynı deterministik `authUrl` ile `MergeSession` URL'si anında alınır
-     *    ve hiçbir zaman "Oturum açın - E-posta adresi veya telefon" ekranı çıkmaz!
-     * 3) `MergeSession` çerez kurulumu devam ederken 1.5 saniyelik zamanlayıcıyla yarıda kesilmez;
-     *    oturum çerezleri kurulduktan sonra OAuth onay sayfasındaki "Devam / İzin ver" butonu otomatik tıklanır.
-     */
-    @SuppressLint("SetJavaScriptEnabled")
-    private fun startGoogleDriveOAuthFlow(
-        existingAccount: CloudAccount?,
-        autoOpenWhenConnected: Boolean = true,
-        skipWebLoginConsentPrompt: Boolean = false
-    ) {
-        stopLoopbackServer()
-
-        lifecycleScope.launch {
-            val serverSocket = withContext(Dispatchers.IO) {
-                try {
-                    ServerSocket().apply {
-                        reuseAddress = true
-                        bind(InetSocketAddress("127.0.0.1", 53682), 5)
-                    }
-                } catch (_: Exception) {
-                    ServerSocket(0, 5, java.net.InetAddress.getByName("127.0.0.1"))
-                }
-            }
-            activeLoopbackSocket = serverSocket
-            val port = serverSocket.localPort
-            val redirectUri = "http://127.0.0.1:$port"
-            val emailHint = existingAccount?.emailOrName?.takeIf { it.contains("@") }
-            val loginHintParam = if (!emailHint.isNullOrBlank()) {
-                "&login_hint=" + URLEncoder.encode(emailHint, "UTF-8")
-            } else ""
-
-            val authUrl = "https://accounts.google.com/o/oauth2/v2/auth" +
-                "?client_id=" + URLEncoder.encode(CloudManager.GOOGLE_OAUTH_CLIENT_ID, "UTF-8") +
-                "&redirect_uri=" + URLEncoder.encode(redirectUri, "UTF-8") +
-                "&response_type=code" +
-                "&scope=" + URLEncoder.encode(CloudManager.GOOGLE_OAUTH_SCOPE_URL, "UTF-8") +
-                "&access_type=offline" +
-                "&include_granted_scopes=true" +
-                loginHintParam
-
-            // Cihazdaki açık Google hesabından tek adımlı otomatik oturum açma (MergeSession) URL'sini al
-            val mergeSessionUrl = if (!emailHint.isNullOrBlank()) {
-                CloudManager.tryGetWebLoginMergeSessionUrl(
-                    context = this@CloudAccountsActivity,
-                    activity = this@CloudAccountsActivity,
-                    email = emailHint,
-                    continueUrl = authUrl
-                )
-            } else null
-
-            // Eğer ilk kez sistem "İzin ver" penceresi (UserRecoverableAuthException) çıktıysa:
-            // WebView içinde e-posta/şifre sormak yerine doğrudan cihazın "İzin ver" penceresini aç!
-            val webLoginRecovery = CloudManager.pendingWebLoginRecoveryIntent
-            if (mergeSessionUrl == null && webLoginRecovery != null && !skipWebLoginConsentPrompt && existingAccount != null) {
-                stopLoopbackServer()
-                pendingGoogleAccountForAuth = existingAccount
-                googleWebLoginConsentLauncher.launch(webLoginRecovery)
-                return@launch
-            }
-
-            val initialLoadUrl = mergeSessionUrl ?: authUrl
-            val dm = resources.displayMetrics
-            val density = dm.density
-            val dialogHeightPx = (dm.heightPixels * 0.86f).toInt().coerceAtLeast((360 * density).toInt())
-
-            val rootContainer = FrameLayout(this@CloudAccountsActivity).apply {
-                layoutParams = ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    dialogHeightPx
-                )
-                setBackgroundColor(Color.parseColor("#181818"))
-            }
-
-            val mainColumn = LinearLayout(this@CloudAccountsActivity).apply {
-                orientation = LinearLayout.VERTICAL
-                layoutParams = FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    dialogHeightPx
-                )
-            }
-
-            val topHelperBar = LinearLayout(this@CloudAccountsActivity).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                val p = (12 * density).toInt()
-                setPadding(p, (8 * density).toInt(), p, (8 * density).toInt())
-                setBackgroundColor(Color.parseColor("#212121"))
-            }
-
-            val ivDriveLogo = ImageView(this@CloudAccountsActivity).apply {
-                val sz = (24 * density).toInt()
-                layoutParams = LinearLayout.LayoutParams(sz, sz).apply {
-                    marginEnd = (10 * density).toInt()
-                }
-                setImageResource(R.drawable.cloud_icon_googledrive)
-            }
-
-            val tvHelper = TextView(this@CloudAccountsActivity).apply {
-                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                text = if (!emailHint.isNullOrBlank()) "Google Drive • $emailHint" else "Google Drive Bağlantısı"
-                setTextColor(Color.WHITE)
-                textSize = 14f
-                setTypeface(typeface, Typeface.BOLD)
-                isSingleLine = true
-            }
-
-            val btnCancelTop = Button(this@CloudAccountsActivity).apply {
-                text = "İPTAL"
-                textSize = 12f
-                setTextColor(Color.parseColor("#B0BEC5"))
-                setBackgroundColor(Color.TRANSPARENT)
-            }
-
-            topHelperBar.addView(ivDriveLogo)
-            topHelperBar.addView(tvHelper)
-            topHelperBar.addView(btnCancelTop)
-
-            val loadingOverlay = LinearLayout(this@CloudAccountsActivity).apply {
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER
-                layoutParams = FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
-                )
-                setBackgroundColor(Color.parseColor("#181818"))
-                val pad = (24 * density).toInt()
-                setPadding(pad, pad, pad, pad)
-                isClickable = true
-                isFocusable = true
-            }
-
-            val ivLoadingDrive = ImageView(this@CloudAccountsActivity).apply {
-                val sz = (60 * density).toInt()
-                layoutParams = LinearLayout.LayoutParams(sz, sz).apply {
-                    bottomMargin = (14 * density).toInt()
-                }
-                setImageResource(R.drawable.cloud_icon_googledrive)
-            }
-
-            val pbConnecting = ProgressBar(this@CloudAccountsActivity).apply {
-                layoutParams = LinearLayout.LayoutParams(
-                    (34 * density).toInt(),
-                    (34 * density).toInt()
-                ).apply {
-                    bottomMargin = (12 * density).toInt()
-                }
-            }
-
-            val tvLoadingStatus = TextView(this@CloudAccountsActivity).apply {
-                text = if (!emailHint.isNullOrBlank()) {
-                    "Google Drive hesabına bağlanılıyor...\n$emailHint"
-                } else {
-                    "Google Drive hesabına bağlanılıyor..."
-                }
-                textSize = 14.5f
-                gravity = Gravity.CENTER
-                setTextColor(Color.WHITE)
-            }
-
-            loadingOverlay.addView(ivLoadingDrive)
-            loadingOverlay.addView(pbConnecting)
-            loadingOverlay.addView(tvLoadingStatus)
-
-            var authDialog: AlertDialog? = null
-            var codeHandled = false
-            var webViewRef: WebView? = null
-
-            fun revealCleanWebViewOnUiThread() {
-                mainHandler.post {
-                    if (!codeHandled) {
-                        webViewRef?.alpha = 1f
-                        loadingOverlay.visibility = View.GONE
-                    }
-                }
-            }
-
-            fun handleAuthCodeReceived(code: String) {
-                if (codeHandled || code.isBlank()) return
-                codeHandled = true
-                mainHandler.post {
-                    CookieManager.getInstance().flush()
-                    loadingOverlay.visibility = View.VISIBLE
-                    tvLoadingStatus.text = "Google Drive dosyaları hazırlanıyor..."
-                }
-                stopLoopbackServer()
-                lifecycleScope.launch {
-                    val saved = CloudManager.exchangeGoogleAuthCodeAndSaveAccount(
-                        context = this@CloudAccountsActivity,
-                        authCode = code,
-                        redirectUri = redirectUri,
-                        existingAccount = existingAccount
-                    )
-                    authDialog?.dismiss()
-                    if (saved != null) {
-                        refreshAccountsList()
-                        Toast.makeText(
-                            this@CloudAccountsActivity,
-                            "✓ Google Drive bağlandı: ${saved.emailOrName}",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                        if (autoOpenWhenConnected) {
-                            launchExplorerForAccount(saved)
-                            if (!intent.getStringExtra("AUTO_AUTH_ACCOUNT_ID").isNullOrBlank()) {
-                                finish()
-                            }
-                        }
-                    } else {
-                        Toast.makeText(
-                            this@CloudAccountsActivity,
-                            CloudManager.lastCloudErrorMessage ?: "Google Drive bağlantısı tamamlanamadı.",
-                            Toast.LENGTH_LONG
-                        ).show()
-                    }
-                }
-            }
-
-            fun dispatchViewportTapOnWebView(cssX: Float, cssY: Float, viewportW: Float, viewportH: Float) {
-                val wv = webViewRef ?: return
-                mainHandler.post {
-                    if (wv.width <= 0 || wv.height <= 0) return@post
-                    val vw = viewportW.coerceAtLeast(1f)
-                    val vh = viewportH.coerceAtLeast(1f)
-                    val px = ((cssX / vw) * wv.width).coerceIn(10f, (wv.width - 10).coerceAtLeast(20).toFloat())
-                    val py = ((cssY / vh) * wv.height).coerceIn(10f, (wv.height - 10).coerceAtLeast(20).toFloat())
-                    val downTime = SystemClock.uptimeMillis()
-                    val downEvt = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, px, py, 0)
-                    val upEvt = MotionEvent.obtain(downTime, downTime + 45L, MotionEvent.ACTION_UP, px, py, 0)
-                    wv.dispatchTouchEvent(downEvt)
-                    wv.dispatchTouchEvent(upEvt)
-                    downEvt.recycle()
-                    upEvt.recycle()
-                }
-            }
-
-            val driveTriangleDataUri = "data:image/svg+xml;utf8," + Uri.encode(
-                """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 87.3 78"><path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/><path d="m43.65 25-13.75-23.8c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44a9.06 9.06 0 0 0 -1.2 4.5h27.5z" fill="#00ac47"/><path d="m73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5h-27.502l5.852 11.5z" fill="#ea4335"/><path d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2h-18.5c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d"/><path d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc"/><path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 28h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00"/></svg>"""
-            )
-
-            val escapedHintEmail = (emailHint ?: "").replace("'", "\\'")
-
-            val sanitizeAndAutomateJs = """
-                (function() {
-                    try {
-                        var driveIconUri = '$driveTriangleDataUri';
-                        var targetEmail = '$escapedHintEmail'.toLowerCase();
-
-                        function cleanBranding() {
-                            if (window._fmCleaning || !document.head || !document.body) return;
-                            window._fmCleaning = true;
-                            try {
-                                if (!document.getElementById('fm_plus_clean_style')) {
-                                    var st = document.createElement('style');
-                                    st.id = 'fm_plus_clean_style';
-                                    st.innerHTML = 'div[data-logo] svg, div[data-custom-logo] svg { display:none !important; }';
-                                    document.head.appendChild(st);
-                                }
-                                var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
-                                var node;
-                                while ((node = walker.nextNode())) {
-                                    if (node.nodeValue && /rclone/i.test(node.nodeValue)) {
-                                        node.nodeValue = node.nodeValue.replace(/rclone/gi, 'Dosya Yöneticisi +');
-                                    }
-                                }
-                                var imgs = document.querySelectorAll('img');
-                                for (var i = 0; i < imgs.length; i++) {
-                                    var im = imgs[i];
-                                    var src = (im.src || '').toLowerCase();
-                                    var alt = (im.alt || '').toLowerCase();
-                                    if (src.indexOf('googleusercontent') !== -1 && im.width >= 20 && im.width <= 96 && src.indexOf('avatar') === -1 && src.indexOf('/a/') === -1) {
-                                        im.src = driveIconUri;
-                                    } else if (alt.indexOf('rclone') !== -1) {
-                                        im.src = driveIconUri;
-                                        im.alt = 'Dosya Yöneticisi +';
-                                    }
-                                }
-                            } finally {
-                                window._fmCleaning = false;
-                            }
-                        }
-
-                        cleanBranding();
-                        if (window.MutationObserver && document.body && !window._fmObserverAttached) {
-                            window._fmObserverAttached = true;
-                            new MutationObserver(cleanBranding).observe(document.body, { childList: true, subtree: true });
-                        }
-
-                        var vw = window.innerWidth || document.documentElement.clientWidth || 360;
-                        var vh = window.innerHeight || document.documentElement.clientHeight || 640;
-                        var href = (window.location.href || '').toLowerCase();
-
-                        // 1. ÖNCELİK: OAuth İzin / Onay Butonu ("Devam", "Devam et", "İzin ver", "Onayla", "Allow", "Continue", "#submit_approve_access")
-                        var checkboxes = document.querySelectorAll('input[type="checkbox"]');
-                        for (var c = 0; c < checkboxes.length; c++) {
-                            if (!checkboxes[c].checked) {
-                                checkboxes[c].click();
-                            }
-                        }
-
-                        var approveBtn = document.getElementById('submit_approve_access');
-                        if (!approveBtn) {
-                            var allBtns = document.querySelectorAll('button, div[role="button"], input[type="submit"]');
-                            for (var b = 0; b < allBtns.length; b++) {
-                                var btnEl = allBtns[b];
-                                if (btnEl.offsetParent === null) continue;
-                                var rawTxt = (btnEl.innerText || btnEl.value || btnEl.textContent || '').trim();
-                                var txt = rawTxt.toLowerCase();
-                                if (txt === 'devam' || txt === 'devam et' || txt === 'i̇zin ver' || txt === 'izin ver' ||
-                                    txt === 'onayla' || txt === 'kabul et' || txt === 'allow' || txt === 'continue') {
-                                    approveBtn = btnEl;
-                                    break;
-                                }
-                            }
-                        }
-
-                        if (approveBtn && approveBtn.offsetParent !== null && !approveBtn.disabled) {
-                            approveBtn.scrollIntoView({block: 'center'});
-                            var ar = approveBtn.getBoundingClientRect();
-                            try {
-                                approveBtn.click();
-                                var form = approveBtn.closest('form');
-                                if (form) form.submit();
-                            } catch (e) {}
-                            if (ar.width > 0 && ar.height > 0 && !window._fmConsentTapped) {
-                                window._fmConsentTapped = true;
-                                return 'TAP|' + (ar.left + ar.width / 2) + '|' + (ar.top + ar.height / 2) + '|' + vw + '|' + vh + '|consent_approve';
-                            }
-                            return 'REVEAL';
-                        }
-
-                        // 2. Hesap Seçici (AccountChooser) ekranındaysak
-                        var passInput = document.querySelector('input[type="password"]');
-                        var isPassVisible = passInput && passInput.offsetParent !== null;
-                        var emailInput = document.querySelector('input[type="email"], #identifierId');
-                        var isEmailVisible = emailInput && emailInput.offsetParent !== null;
-
-                        if (targetEmail && !isPassVisible && !isEmailVisible && !window._fmAccountTapped) {
-                            var items = document.querySelectorAll('li [data-identifier], [role="link"][data-identifier], [data-identifier], [data-email]');
-                            if (items.length > 1 || href.indexOf('accountchooser') !== -1 || href.indexOf('oauthchooseaccount') !== -1) {
-                                for (var k = 0; k < items.length; k++) {
-                                    var idVal = (items[k].getAttribute('data-identifier') || items[k].getAttribute('data-email') || '').toLowerCase();
-                                    if (idVal === targetEmail) {
-                                        window._fmAccountTapped = true;
-                                        items[k].scrollIntoView({block: 'center'});
-                                        var r = items[k].getBoundingClientRect();
-                                        try { items[k].click(); } catch (e) {}
-                                        if (r.width > 0 && r.height > 0) {
-                                            return 'TAP|' + (r.left + r.width / 2) + '|' + (r.top + r.height / 2) + '|' + vw + '|' + vh + '|account_select';
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        return 'REVEAL';
-                    } catch (err) {
-                        return 'REVEAL';
-                    }
-                })();
-            """.trimIndent()
-
-            fun evaluateAndProcessOAuthPage(view: WebView?) {
-                val wv = view ?: webViewRef ?: return
-                if (codeHandled) return
-                wv.evaluateJavascript(sanitizeAndAutomateJs) { rawResult ->
-                    val res = unescapeEvaluateJsString(rawResult)
-                    if (res.startsWith("TAP|")) {
-                        val parts = res.split("|")
-                        val cx = parts.getOrNull(1)?.toFloatOrNull() ?: 0f
-                        val cy = parts.getOrNull(2)?.toFloatOrNull() ?: 0f
-                        val vw = parts.getOrNull(3)?.toFloatOrNull() ?: 360f
-                        val vh = parts.getOrNull(4)?.toFloatOrNull() ?: 640f
-                        dispatchViewportTapOnWebView(cx, cy, vw, vh)
-                        mainHandler.postDelayed({
-                            revealCleanWebViewOnUiThread()
-                        }, 600L)
-                    } else {
-                        revealCleanWebViewOnUiThread()
-                    }
-                }
-            }
-
-            val webView = WebView(this@CloudAccountsActivity).apply {
-                layoutParams = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    0,
-                    1f
-                )
-                alpha = 0f
-                isVerticalScrollBarEnabled = true
-                isHorizontalScrollBarEnabled = false
-                settings.javaScriptEnabled = true
-                settings.domStorageEnabled = true
-                settings.databaseEnabled = true
-                settings.useWideViewPort = true
-                settings.loadWithOverviewMode = true
-                settings.setSupportZoom(true)
-                settings.builtInZoomControls = true
-                settings.displayZoomControls = false
-                settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                settings.userAgentString =
-                    "Mozilla/5.0 (Linux; Android 14; SM-X710) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.6613.127 Safari/537.36"
-
-                webViewClient = object : WebViewClient() {
-                    override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
-                        super.onPageStarted(view, url, favicon)
-                        val u = url ?: ""
-                        if (u.startsWith("http://127.0.0.1") || u.startsWith("http://localhost")) {
-                            val code = Uri.parse(u).getQueryParameter("code")
-                            if (!code.isNullOrBlank()) {
-                                handleAuthCodeReceived(code)
-                            }
-                            return
-                        }
-                        if (u.contains("myaccount.google.com") || u.contains("accounts.google.com/ManageAccount") || u.contains("www.google.com")) {
-                            view?.loadUrl(authUrl)
-                        }
-                    }
-
-                    override fun onPageCommitVisible(view: WebView?, url: String?) {
-                        super.onPageCommitVisible(view, url)
-                        val u = url ?: ""
-                        if (!u.contains("MergeSession") && !u.contains("CheckCookie")) {
-                            evaluateAndProcessOAuthPage(view)
-                        }
-                    }
-
-                    override fun onPageFinished(view: WebView?, url: String?) {
-                        super.onPageFinished(view, url)
-                        val u = url ?: ""
-                        if (u.startsWith("http://127.0.0.1") || u.startsWith("http://localhost")) {
-                            val code = Uri.parse(u).getQueryParameter("code")
-                            if (!code.isNullOrBlank()) {
-                                handleAuthCodeReceived(code)
-                            }
-                            return
-                        }
-                        if (u.contains("myaccount.google.com") || u.contains("accounts.google.com/ManageAccount") || u.contains("www.google.com")) {
-                            view?.loadUrl(authUrl)
-                            return
-                        }
-                        if (u.contains("MergeSession")) {
-                            // MergeSession sayfasının yüklenmesi bitti ama yönlendirme yapmadıysa OAuth URL'sine geç
-                            mainHandler.postDelayed({
-                                val cur = view?.url ?: ""
-                                if (!codeHandled && cur.contains("MergeSession")) {
-                                    view?.loadUrl(authUrl)
-                                }
-                            }, 600L)
-                            return
-                        }
-                        if (!u.contains("CheckCookie")) {
-                            mainHandler.postDelayed({
-                                evaluateAndProcessOAuthPage(view)
-                            }, 150L)
-                        }
-                    }
-
-                    override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                        val u = request?.url?.toString() ?: return false
-                        if (u.startsWith("http://127.0.0.1") || u.startsWith("http://localhost")) {
-                            val code = Uri.parse(u).getQueryParameter("code")
-                            if (!code.isNullOrBlank()) {
-                                handleAuthCodeReceived(code)
-                            }
-                            return true
-                        }
-                        return false
-                    }
-
-                    @Deprecated("Deprecated in Java")
-                    override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
-                        val u = url ?: return false
-                        if (u.startsWith("http://127.0.0.1") || u.startsWith("http://localhost")) {
-                            val code = Uri.parse(u).getQueryParameter("code")
-                            if (!code.isNullOrBlank()) {
-                                handleAuthCodeReceived(code)
-                            }
-                            return true
-                        }
-                        return false
-                    }
-                }
-            }
-            webViewRef = webView
-
-            CookieManager.getInstance().setAcceptCookie(true)
-            CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
-
-            mainColumn.addView(topHelperBar)
-            mainColumn.addView(webView)
-            rootContainer.addView(mainColumn)
-            rootContainer.addView(loadingOverlay)
-
-            authDialog = AlertDialog.Builder(this@CloudAccountsActivity)
-                .setView(rootContainer)
-                .setOnCancelListener {
-                    stopLoopbackServer()
-                }
-                .create()
-
-            btnCancelTop.setOnClickListener {
-                stopLoopbackServer()
-                authDialog?.dismiss()
-            }
-
-            authDialog.show()
-            authDialog.window?.let { win ->
-                win.clearFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
-                win.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
-                win.setLayout(
-                    (dm.widthPixels * 0.92f).toInt(),
-                    dialogHeightPx
-                )
-            }
-
-            webView.loadUrl(initialLoadUrl)
-
-            // Emniyet zamanlayıcısı: MergeSession çerez kurulumunu yarıda kesmeden, 3.2 saniye sonunda
-            // hala onay ekranındaysak temizlenmiş WebView'u görünür yap.
-            mainHandler.postDelayed({
-                if (!codeHandled && authDialog?.isShowing == true) {
-                    val curUrl = webView.url ?: ""
-                    if (curUrl.isBlank()) {
-                        webView.loadUrl(authUrl)
-                    } else if (!curUrl.contains("MergeSession")) {
-                        evaluateAndProcessOAuthPage(webView)
-                    }
-                    revealCleanWebViewOnUiThread()
-                }
-            }, 3200L)
-
-            loopbackServerJob = lifecycleScope.launch(Dispatchers.IO) {
-                try {
-                    val client = serverSocket.accept()
-                    val reader = BufferedReader(InputStreamReader(client.getInputStream()))
-                    val requestLine = reader.readLine() ?: ""
-                    val pathPart = requestLine.split(" ").getOrNull(1) ?: ""
-                    val code = Uri.parse("http://127.0.0.1$pathPart").getQueryParameter("code")
-
-                    val html = """
-                        <html><head><meta charset="utf-8"/></head>
-                        <body style="font-family:sans-serif;text-align:center;padding:40px;background:#121212;color:#ffffff;">
-                        <h2 style="color:#26A69A;">✓ Google Drive Bağlandı!</h2>
-                        <p>Dosya Yöneticisi + uygulamasına yönlendiriliyorsunuz...</p>
-                        <script>window.close();</script>
-                        </body></html>
-                    """.trimIndent()
-                    val responseBytes = html.toByteArray(Charsets.UTF_8)
-                    val header = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: ${responseBytes.size}\r\nConnection: close\r\n\r\n"
-                    client.getOutputStream().apply {
-                        write(header.toByteArray(Charsets.UTF_8))
-                        write(responseBytes)
-                        flush()
-                    }
-                    client.close()
-
-                    if (!code.isNullOrBlank()) {
-                        handleAuthCodeReceived(code)
-                    }
-                } catch (_: Exception) {
-                }
-            }
-        }
-    }
-
-    private fun unescapeEvaluateJsString(raw: String?): String {
-        if (raw.isNullOrBlank() || raw == "null") return ""
-        var s = raw.trim()
-        if (s.startsWith("\"") && s.endsWith("\"") && s.length >= 2) {
-            s = s.substring(1, s.length - 1)
-        }
-        return s.replace("\\\"", "\"")
-            .replace("\\\\", "\\")
-            .replace("\\n", "\n")
-    }
-
-    private fun stopLoopbackServer() {
-        loopbackServerJob?.cancel()
-        loopbackServerJob = null
-        try {
-            activeLoopbackSocket?.close()
-        } catch (_: Exception) {
-        }
-        activeLoopbackSocket = null
     }
 
     private fun showAddCloudCredentialsDialog(provider: CloudProviderType) {
@@ -1738,7 +1067,7 @@ class CloudAccountsActivity : AppCompatActivity() {
                     1 -> launchNativeGoogleAccountPicker(account.emailOrName)
                     2 -> {
                         when (account.provider) {
-                            CloudProviderType.GOOGLE_DRIVE -> startGoogleDriveOAuthFlow(existingAccount = account, autoOpenWhenConnected = true)
+                            CloudProviderType.GOOGLE_DRIVE -> onGoogleAccountPickedFromPlayServices(account.emailOrName)
                             CloudProviderType.MEGA -> showAddMegaAccountDialog(existingAccount = account)
                             else -> showAddCloudCredentialsDialog(account.provider)
                         }

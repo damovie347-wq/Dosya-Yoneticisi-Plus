@@ -8,10 +8,12 @@ import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.PointF
 import android.graphics.RectF
+import android.media.ExifInterface
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.AttributeSet
+import android.util.LruCache
 import android.view.GestureDetector
 import android.view.Gravity
 import android.view.MotionEvent
@@ -41,6 +43,7 @@ import com.alphainventor.filemanager.databinding.ActivityImageViewerBinding
 import com.alphainventor.filemanager.model.FileItem
 import com.alphainventor.filemanager.util.AppSettings
 import com.alphainventor.filemanager.util.FormatUtils
+import com.alphainventor.filemanager.util.ThumbnailCacheManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -50,18 +53,28 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
-import kotlin.math.max
 import kotlin.math.min
 
 /**
  * Orijinal Dosya Yöneticisi + 3.6.7 Resim Görüntüleyici (Galeri):
  * 1) Klasördeki tüm görseller arasında sağa-sola kaydırarak geçiş (PagerSnapHelper + RecyclerView).
- * 2) İki parmakla yakınlaştırma/uzaklaştırma (Pinch-to-Zoom 1.0x - 5.0x), çift dokunuşla yakınlaştırma (Double-Tap Zoom)
+ * 2) Orijinal APK'daki (viewer/b$b & @id/photo_preview_image) sıfır bekleme mimarisi:
+ *    - Görsele tıklandığında önce ThumbnailCacheManager'daki önbellek küçük resmi 0 ms'de gösterilir (loading ikonu çıkmaz),
+ *      ardından tam çözünürlüklü görsel arka planda çözülüp kesintisiz yerleştirilir.
+ *    - Yan sayfalar (currentIndex - 1 ve currentIndex + 1) LruCache içine önceden yüklenir (prefetch).
+ * 3) İki parmakla yakınlaştırma/uzaklaştırma (Pinch-to-Zoom 1.0x - 5.0x), çift dokunuşla yakınlaştırma (Double-Tap Zoom)
  *    ve yakınlaştırılmış görsel üzerinde sürükleme (Pan).
- * 3) Üst Bar: "1 / 30" sayaç + dosya adı + sağ üstte ikonlu "Slayt gösterisi", "Şu şekilde ayarla:", "Şununla aç" menüsü.
- * 4) Alt Bar: Paylaş | Döndür | Sil | Bilgi (sol altta tarih/yol/çözünürlük/boyut kutusu) | Daha fazla.
+ * 4) Üst Bar: "1 / 30" sayaç + dosya adı + sağ üstte ikonlu "Slayt gösterisi", "Şu şekilde ayarla:", "Şununla aç" menüsü.
+ * 5) Alt Bar: Paylaş | Döndür | Sil | Bilgi (sol altta tarih/yol/çözünürlük/boyut kutusu) | Daha fazla.
  */
 class ImageViewerActivity : AppCompatActivity() {
+
+    companion object {
+        private val maxMemKb = (Runtime.getRuntime().maxMemory() / 1024).toInt()
+        private val fullImageCache = object : LruCache<String, Bitmap>((maxMemKb / 6).coerceAtLeast(12288)) {
+            override fun sizeOf(key: String, value: Bitmap): Int = (value.byteCount / 1024).coerceAtLeast(1)
+        }
+    }
 
     private lateinit var binding: ActivityImageViewerBinding
     private lateinit var pagerAdapter: ImagePagerAdapter
@@ -100,29 +113,47 @@ class ImageViewerActivity : AppCompatActivity() {
         val singlePath = intent.data?.path ?: (intent.getStringExtra("IMAGE_PATH") ?: "")
         val singleTitle = intent.getStringExtra("IMAGE_TITLE") ?: singlePath.substringAfterLast('/')
 
-        val passedPaths = intent.getStringArrayListExtra("IMAGE_LIST_PATHS")
-        val passedTitles = intent.getStringArrayListExtra("IMAGE_LIST_TITLES")
-        val passedIndex = intent.getIntExtra("IMAGE_INDEX", -1)
+        // Orijinal APK viewer/c & viewer/e: Binder IPC sınırına takılmadan 0 ms'de oturum listesini al
+        val sessionKey = intent.getStringExtra("VIEWER_SESSION_KEY")
+        val session = LocalFileRepository.getViewerSession(sessionKey)
 
-        if (!passedPaths.isNullOrEmpty()) {
-            imagePaths.addAll(passedPaths)
-            if (!passedTitles.isNullOrEmpty() && passedTitles.size == passedPaths.size) {
-                imageTitles.addAll(passedTitles)
+        if (session != null && session.paths.isNotEmpty()) {
+            imagePaths.addAll(session.paths)
+            if (session.titles.size == session.paths.size) {
+                imageTitles.addAll(session.titles)
             } else {
-                imageTitles.addAll(passedPaths.map { it.substringAfterLast('/') })
+                imageTitles.addAll(session.paths.map { it.substringAfterLast('/') })
             }
-            currentIndex = if (passedIndex in imagePaths.indices) {
-                passedIndex
-            } else {
-                imagePaths.indexOf(singlePath).coerceAtLeast(0)
+            if (authToken.isBlank() && session.authToken.isNotBlank()) {
+                authToken = session.authToken
             }
-        } else if (singlePath.isNotBlank()) {
-            loadSiblingImagesFromParentDirectory(singlePath, singleTitle)
+            currentIndex = session.initialIndex.coerceIn(0, imagePaths.lastIndex)
+        } else {
+            val passedPaths = intent.getStringArrayListExtra("IMAGE_LIST_PATHS")
+            val passedTitles = intent.getStringArrayListExtra("IMAGE_LIST_TITLES")
+            val passedIndex = intent.getIntExtra("IMAGE_INDEX", -1)
+
+            if (!passedPaths.isNullOrEmpty()) {
+                imagePaths.addAll(passedPaths)
+                if (!passedTitles.isNullOrEmpty() && passedTitles.size == passedPaths.size) {
+                    imageTitles.addAll(passedTitles)
+                } else {
+                    imageTitles.addAll(passedPaths.map { it.substringAfterLast('/') })
+                }
+                currentIndex = if (passedIndex in imagePaths.indices) {
+                    passedIndex
+                } else {
+                    imagePaths.indexOf(singlePath).coerceAtLeast(0)
+                }
+            } else if (singlePath.isNotBlank()) {
+                loadSiblingImagesFromParentDirectory(singlePath, singleTitle)
+            }
         }
 
         setupPager()
         setupTopAndBottomActions()
         updateCurrentPageUi()
+        prefetchAdjacentImages(currentIndex)
     }
 
     override fun onDestroy() {
@@ -134,6 +165,20 @@ class ImageViewerActivity : AppCompatActivity() {
         val file = File(targetPath)
         val parent = file.parentFile
         if (parent != null && parent.exists() && parent.isDirectory) {
+            // Önce bellek önbelleğindeki klasör listesini kontrol et (0 ms)
+            val cachedDir = LocalFileRepository.getCachedExplorerItems("LOCAL", parent.absolutePath, "", "")
+            if (cachedDir != null) {
+                val imgs = cachedDir.filter { !it.isDirectory && it.isImageFile() }
+                if (imgs.isNotEmpty()) {
+                    for (it in imgs) {
+                        imagePaths.add(it.path)
+                        imageTitles.add(it.name)
+                    }
+                    currentIndex = imagePaths.indexOf(file.absolutePath).coerceAtLeast(0)
+                    return
+                }
+            }
+
             val imageExts = setOf("jpg", "jpeg", "png", "webp", "gif", "bmp", "heic", "heif")
             val siblings = parent.listFiles()?.filter { f ->
                 f.isFile && (AppSettings.showHiddenFiles || !f.name.startsWith(".")) &&
@@ -171,7 +216,7 @@ class ImageViewerActivity : AppCompatActivity() {
 
         pagerAdapter = ImagePagerAdapter()
         binding.rvImagePager.adapter = pagerAdapter
-        binding.rvImagePager.setItemViewCacheSize(4)
+        binding.rvImagePager.setItemViewCacheSize(5)
 
         if (currentIndex in imagePaths.indices) {
             binding.rvImagePager.scrollToPosition(currentIndex)
@@ -195,6 +240,21 @@ class ImageViewerActivity : AppCompatActivity() {
         if (newIndex !in imagePaths.indices) return
         currentIndex = newIndex
         updateCurrentPageUi()
+        prefetchAdjacentImages(newIndex)
+    }
+
+    private fun prefetchAdjacentImages(centerIndex: Int) {
+        val candidates = listOf(centerIndex - 1, centerIndex + 1).filter { it in imagePaths.indices }
+        for (idx in candidates) {
+            val pathOrUrl = imagePaths[idx]
+            if (fullImageCache.get(pathOrUrl)?.takeIf { !it.isRecycled } != null) continue
+            lifecycleScope.launch(Dispatchers.IO) {
+                val bmp = decodeImageSafely(pathOrUrl)
+                if (bmp != null && !bmp.isRecycled) {
+                    fullImageCache.put(pathOrUrl, bmp)
+                }
+            }
+        }
     }
 
     private fun updateCurrentPageUi() {
@@ -284,7 +344,7 @@ class ImageViewerActivity : AppCompatActivity() {
     }
 
     /**
-     * Orijinal APK Sağ Üst / Sağ Alt İkonlu Açılır Menü (Video 3 00:08 - 00:16):
+     * Orijinal APK Sağ Üst / Sağ Alt İkonlu Açılır Menü:
      * - ▶ Slayt gösterisi
      * - 🖼 Şu şekilde ayarla: (Duvar kağıdı / WhatsApp Profil fotoğrafı / Kişi resmi)
      * - ↗ Şununla aç
@@ -429,6 +489,7 @@ class ImageViewerActivity : AppCompatActivity() {
                         file.delete()
                     }
                     if (deleted) {
+                        fullImageCache.remove(path)
                         val removedIdx = currentIndex
                         imagePaths.removeAt(removedIdx)
                         if (removedIdx in imageTitles.indices) {
@@ -461,6 +522,71 @@ class ImageViewerActivity : AppCompatActivity() {
             lastModified = if (file.exists()) file.lastModified() else System.currentTimeMillis(),
             mimeType = "image/*"
         )
+    }
+
+    private fun decodeImageSafely(pathOrUrl: String): Bitmap? {
+        return try {
+            if (pathOrUrl.startsWith("http://") || pathOrUrl.startsWith("https://")) {
+                val reqBuilder = Request.Builder().url(pathOrUrl)
+                if (authToken.isNotBlank()) {
+                    reqBuilder.header("Authorization", "Bearer $authToken")
+                }
+                CloudManager.httpClient.newCall(reqBuilder.build()).execute().use { resp ->
+                    val bytes = resp.body?.bytes() ?: return null
+                    decodeSampledBytes(bytes, 2560, 2560)
+                }
+            } else {
+                val file = File(pathOrUrl)
+                if (!file.exists()) return null
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(file.absolutePath, bounds)
+                var sample = 1
+                val maxDim = 2560
+                while (bounds.outWidth / sample > maxDim || bounds.outHeight / sample > maxDim) {
+                    sample *= 2
+                }
+                val decodeOpts = BitmapFactory.Options().apply {
+                    inSampleSize = sample
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
+                }
+                val rawBmp = BitmapFactory.decodeFile(file.absolutePath, decodeOpts) ?: return null
+                val orientation = try {
+                    ExifInterface(file.absolutePath).getAttributeInt(
+                        ExifInterface.TAG_ORIENTATION,
+                        ExifInterface.ORIENTATION_NORMAL
+                    )
+                } catch (_: Throwable) {
+                    ExifInterface.ORIENTATION_NORMAL
+                }
+                val degrees = when (orientation) {
+                    ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+                    ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                    ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                    else -> 0f
+                }
+                if (degrees != 0f) {
+                    val m = Matrix().apply { postRotate(degrees) }
+                    val rotated = Bitmap.createBitmap(rawBmp, 0, 0, rawBmp.width, rawBmp.height, m, true)
+                    if (rotated != rawBmp) rawBmp.recycle()
+                    rotated
+                } else {
+                    rawBmp
+                }
+            }
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun decodeSampledBytes(bytes: ByteArray, reqW: Int, reqH: Int): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        var sample = 1
+        while (bounds.outWidth / sample > reqW || bounds.outHeight / sample > reqH) {
+            sample *= 2
+        }
+        val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
     }
 
     // ==================== PAGER ADAPTER & ZOOMABLE IMAGE VIEW ====================
@@ -507,64 +633,45 @@ class ImageViewerActivity : AppCompatActivity() {
             val pathOrUrl = imagePaths[position]
             val rot = imageRotations[position] ?: 0f
             holder.zoomImageView.rotation = rot
-            holder.zoomImageView.setImageBitmap(null)
-            holder.progressBar.visibility = View.VISIBLE
+            holder.zoomImageView.tag = pathOrUrl
+
+            // 1) Tam çözünürlüklü LruCache içinde varsa 0 ms'de doğrudan göster!
+            val cachedFull = fullImageCache.get(pathOrUrl)?.takeIf { !it.isRecycled }
+            if (cachedFull != null) {
+                holder.progressBar.visibility = View.GONE
+                holder.zoomImageView.setZoomBitmap(cachedFull)
+                return
+            }
+
+            // 2) Orijinal APK @id/photo_preview_image mantığı: ThumbnailCacheManager'da küçük resim varsa
+            //    loading spinner göstermeden 0 ms'de küçük resmi göster, arka planda tam çözünürlüğü çöz!
+            val cachedThumb = ThumbnailCacheManager.getCached(pathOrUrl)
+            if (cachedThumb != null && !cachedThumb.isRecycled) {
+                holder.progressBar.visibility = View.GONE
+                holder.zoomImageView.setZoomBitmap(cachedThumb)
+            } else {
+                holder.zoomImageView.setImageBitmap(null)
+                holder.progressBar.visibility = View.VISIBLE
+            }
 
             lifecycleScope.launch {
                 val bmp = withContext(Dispatchers.IO) {
                     decodeImageSafely(pathOrUrl)
                 }
-                holder.progressBar.visibility = View.GONE
-                if (bmp != null) {
-                    holder.zoomImageView.setZoomBitmap(bmp)
+                if (bmp != null && !bmp.isRecycled) {
+                    fullImageCache.put(pathOrUrl, bmp)
+                    ThumbnailCacheManager.putCached(pathOrUrl, bmp)
+                }
+                if (holder.zoomImageView.tag == pathOrUrl) {
+                    holder.progressBar.visibility = View.GONE
+                    if (bmp != null && !bmp.isRecycled) {
+                        holder.zoomImageView.setZoomBitmap(bmp)
+                    }
                 }
             }
         }
 
         override fun getItemCount(): Int = imagePaths.size
-
-        private fun decodeImageSafely(pathOrUrl: String): Bitmap? {
-            return try {
-                if (pathOrUrl.startsWith("http://") || pathOrUrl.startsWith("https://")) {
-                    val reqBuilder = Request.Builder().url(pathOrUrl)
-                    if (authToken.isNotBlank()) {
-                        reqBuilder.header("Authorization", "Bearer $authToken")
-                    }
-                    CloudManager.httpClient.newCall(reqBuilder.build()).execute().use { resp ->
-                        val bytes = resp.body?.bytes() ?: return null
-                        decodeSampledBytes(bytes, 2560, 2560)
-                    }
-                } else {
-                    val file = File(pathOrUrl)
-                    if (!file.exists()) return null
-                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                    BitmapFactory.decodeFile(file.absolutePath, bounds)
-                    var sample = 1
-                    val maxDim = 2560
-                    while (bounds.outWidth / sample > maxDim || bounds.outHeight / sample > maxDim) {
-                        sample *= 2
-                    }
-                    val decodeOpts = BitmapFactory.Options().apply {
-                        inSampleSize = sample
-                        inPreferredConfig = Bitmap.Config.ARGB_8888
-                    }
-                    BitmapFactory.decodeFile(file.absolutePath, decodeOpts)
-                }
-            } catch (_: Throwable) {
-                null
-            }
-        }
-
-        private fun decodeSampledBytes(bytes: ByteArray, reqW: Int, reqH: Int): Bitmap? {
-            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-            var sample = 1
-            while (bounds.outWidth / sample > reqW || bounds.outHeight / sample > reqH) {
-                sample *= 2
-            }
-            val opts = BitmapFactory.Options().apply { inSampleSize = sample }
-            return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
-        }
     }
 }
 
@@ -580,7 +687,6 @@ class ZoomableImageView @JvmOverloads constructor(
 
     private val baseMatrix = Matrix()
     private val drawMatrix = Matrix()
-    private val matrixValues = FloatArray(9)
     private val displayRect = RectF()
 
     private var currentScale = 1f
@@ -644,8 +750,12 @@ class ZoomableImageView @JvmOverloads constructor(
 
     fun setZoomBitmap(bmp: Bitmap) {
         super.setImageBitmap(bmp)
-        post {
+        if (width > 0 && height > 0) {
             resetToFitCenter()
+        } else {
+            post {
+                resetToFitCenter()
+            }
         }
     }
 
@@ -733,7 +843,6 @@ class ZoomableImageView @JvmOverloads constructor(
                         imageMatrix = drawMatrix
                         lastTouch.set(event.x, event.y)
 
-                        // Eğer yakınlaştırılmış görüntünün en sol/sağ kenarına ulaşıldıysa yatay kaydırmada Pager'a izin ver
                         val atLeftEdge = displayRect.left >= -2f && dx > 6f
                         val atRightEdge = displayRect.right <= width + 2f && dx < -6f
                         if ((atLeftEdge || atRightEdge) && abs(dx) > abs(dy) * 1.5f) {

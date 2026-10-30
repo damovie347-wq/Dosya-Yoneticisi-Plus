@@ -6,36 +6,41 @@ import android.content.pm.ActivityInfo
 import android.graphics.Color
 import android.graphics.Typeface
 import android.media.AudioManager
-import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.OpenableColumns
+import android.util.TypedValue
 import android.view.GestureDetector
 import android.view.Gravity
 import android.view.MotionEvent
+import android.view.ScaleGestureDetector
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.PopupMenu
+import android.widget.PopupWindow
 import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
@@ -58,25 +63,30 @@ import com.alphainventor.filemanager.model.FileItem
 import com.alphainventor.filemanager.model.FileSourceType
 import com.alphainventor.filemanager.theme.ThemeManager
 import com.alphainventor.filemanager.util.FormatUtils
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 
 /**
- * Orijinal Dosya Yöneticisi + 3.6.7 MPV Sınıfı Yüksek Performanslı Video Oynatıcı:
- * 1) MPV tarzı anlık önbellekleme (bufferForPlaybackMs = 250ms, 10 sn geri tamponu) ve Matroska (.mkv)
- *    Cues anahtar kare tablosunu bozmayan temiz DefaultExtractorsFactory yapılandırması.
- * 2) AV1 (10-bit / AV1Core) ve DDP5.1 (E-AC3) .mkv dosyalarında:
- *    - Önce donanım çözücüsü (EXTENSION_RENDERER_MODE_ON + tüm sistem MediaCodec listesi yedeklemesi) kullanılır.
- *    - onPlayerError içinde playCurrentVideoItem'ın errorRecoveryCount değerini sıfırlaması nedeniyle oluşan
- *      sonsuz 00:00 döngüsü tamamen giderildi; hata durumunda konum (resumePos) korunarak kurtarma yapılır
- *      ve gerekirse yerleşik donanım VideoView yüzeyine kesintisiz geçilir!
- * 3) Etkileşimli Ses İzi (🎵) ve Altyazı (💬) Seçici:
- *    - Film içindeki tüm gömülü ses izlerini (dil, kanal, kodek) ve altyazıları listeler, tek dokunuşla
- *      TrackSelectionOverride üzerinden anında değiştirir!
+ * Orijinal Dosya Yöneticisi + 3.6.7 Video Oynatıcı (VideoPlayerActivity & viewer/f):
+ * 1) Orijinal arayüz düzeni:
+ *    - Sağ altta dairesel yüzen butonlar (@drawable/btn_circular): Ses İzi (🎵), Altyazı (💬), Kilit (🔒), Tam Ekran / En-Boy (⛶).
+ *    - Ana alt satır (control_buttons_line2): En-Boy | Önceki (|◀) | Oynat/Duraklat | Sonraki (▶|) | Diğer Kontroller (▲/▼) | Ekran Döndür (🔄).
+ *    - Açılır ek kontrol satırı (control_buttons_line1): Karıştır (🔀) | 10sn Geri (↺10) | Oynatma Hızı (1.0x) | 10sn İleri (↻10) | Tekrar Modu (1 / 🔁 / 🔂).
+ * 2) Orijinal açılır menüler ve diyaloglar:
+ *    - Ses izi, Altyazı ve Oynatma hızı (0.25x..2.0x) butonların hemen üzerinde koyu açılır PopupWindow olarak açılır.
+ *    - Sağ üst üç nokta menüsü: Altyazı seç (.srt/.vtt), Altyazı boyutu (SeekBar diyaloğu), Çözücü değiştir, Şununla aç, Özellikler.
+ * 3) Orijinal dokunmatik hareketler (Gestures):
+ *    - Sol dikey kaydırma: Parlaklık (`vertical_progress_bar_brightness.xml` + `ic_player_brightness_high`).
+ *    - Sağ dikey kaydırma: Ses (`vertical_progress_bar.xml` + `ic_vp_volume_on`).
+ *    - Yatay kaydırma: 46sp gölgeli süre göstergesiyle anlık video sarma.
+ *    - İki parmakla yakınlaştırma/uzaklaştırma (Pinch-to-Zoom 0.5x - 3.0x).
+ *    - Uzun basma: 2X hızlı oynatma (`bg_player_control_popup`).
+ *    - Çift dokunma: Sol 1/3 -> -10sn, Sağ 1/3 -> +10sn, Orta -> Oynat/Duraklat (`iconSplash` animasyonu).
+ * 4) Sıfır bekleme (0 ms yerel başlangıç):
+ *    - Yerel videolarda bloklayıcı `MediaMetadataRetriever` ön taraması kaldırıldı ve `pbVideoBuffering` yalnızca ağ akışlarında gösterilir.
  */
 @OptIn(UnstableApi::class)
 class VideoPlayerActivity : AppCompatActivity() {
@@ -93,9 +103,14 @@ class VideoPlayerActivity : AppCompatActivity() {
     private var playlistIndex: Int = 0
 
     private var isControlsLocked: Boolean = false
-    private var isRepeatOne: Boolean = false
+    // 0 = Tek Oynat (ic_play_one), 1 = Tümünü Tekrarla (ic_vp_repeat_off), 2 = Biri Tekrarla (ic_vp_repeat_one)
+    private var repeatModeState: Int = 0
     private var isShuffleEnabled: Boolean = false
     private var currentSpeed: Float = 1.0f
+    private var subtitleTextSizeSp: Float = 18f
+    private var externalSubtitleUri: Uri? = null
+    private var videoZoomScale: Float = 1.0f
+
     private var preferSoftwareDecoder: Boolean = false
     private var usingPlatformFallback: Boolean = false
     private var isDraggingSeekBar: Boolean = false
@@ -106,6 +121,21 @@ class VideoPlayerActivity : AppCompatActivity() {
     private var deferredSeekOnReadyMs: Long = -1L
     private var lastLiveSeekRealtimeMs: Long = 0L
     private var errorRecoveryCount: Int = 0
+
+    private val externalSubtitleLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            try {
+                contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } catch (_: Throwable) {
+            }
+            externalSubtitleUri = uri
+            val pos = exoPlayer?.currentPosition ?: 0L
+            initializePlayer(startPositionMs = pos, isErrorRecovery = false)
+            Toast.makeText(this, "Altyazı yüklendi.", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     private val progressUpdater = object : Runnable {
         override fun run() {
@@ -150,16 +180,37 @@ class VideoPlayerActivity : AppCompatActivity() {
             ?: Uri.decode(videoUrlOrPath.substringAfterLast('/').substringBefore('?'))
         authToken = intent.getStringExtra("AUTH_TOKEN") ?: ""
 
-        playlistUrls = intent.getStringArrayListExtra("PLAYLIST_URLS") ?: arrayListOf(videoUrlOrPath)
-        playlistTitles = intent.getStringArrayListExtra("PLAYLIST_TITLES") ?: arrayListOf(videoTitle)
-        playlistIndex = intent.getIntExtra("PLAYLIST_INDEX", 0).coerceIn(0, (playlistUrls.size - 1).coerceAtLeast(0))
+        // Orijinal APK viewer/c & viewer/e: 0 ms oturum listesi aktarımı
+        val sessionKey = intent.getStringExtra("VIEWER_SESSION_KEY")
+        val session = LocalFileRepository.getViewerSession(sessionKey)
+        if (session != null && session.paths.isNotEmpty()) {
+            playlistUrls = ArrayList(session.paths)
+            playlistTitles = if (session.titles.size == session.paths.size) {
+                ArrayList(session.titles)
+            } else {
+                ArrayList(session.paths.map { it.substringAfterLast('/') })
+            }
+            if (authToken.isBlank() && session.authToken.isNotBlank()) {
+                authToken = session.authToken
+            }
+            playlistIndex = session.initialIndex.coerceIn(0, (playlistUrls.size - 1).coerceAtLeast(0))
+        } else {
+            playlistUrls = intent.getStringArrayListExtra("PLAYLIST_URLS") ?: arrayListOf(videoUrlOrPath)
+            playlistTitles = intent.getStringArrayListExtra("PLAYLIST_TITLES") ?: arrayListOf(videoTitle)
+            playlistIndex = intent.getIntExtra("PLAYLIST_INDEX", 0).coerceIn(0, (playlistUrls.size - 1).coerceAtLeast(0))
+        }
 
         binding.tvVideoTitle.text = videoTitle
-        binding.tvCodecBadge.text = "HW+FFmpeg"
+        binding.tvCodecBadge.text = "HW+"
+        binding.exoPlayerView.subtitleView?.setFixedTextSize(TypedValue.COMPLEX_UNIT_SP, subtitleTextSizeSp)
 
         setupOverlayControls()
         setupTouchAndScrubGestures()
         initializePlayer(startPositionMs = 0L, isErrorRecovery = false)
+    }
+
+    private fun isNetworkStream(): Boolean {
+        return videoUrlOrPath.startsWith("http://") || videoUrlOrPath.startsWith("https://")
     }
 
     private fun resolveEffectiveDuration(player: ExoPlayer?): Long {
@@ -195,53 +246,6 @@ class VideoPlayerActivity : AppCompatActivity() {
         return uri.lastPathSegment?.substringAfterLast('/')
     }
 
-    private fun preloadLocalVideoDuration(pathOrUri: String) {
-        lifecycleScope.launch(Dispatchers.IO) {
-            val dur = try {
-                val retriever = MediaMetadataRetriever()
-                try {
-                    when {
-                        pathOrUri.startsWith("http://") || pathOrUri.startsWith("https://") -> 0L
-                        pathOrUri.startsWith("content://") -> {
-                            retriever.setDataSource(this@VideoPlayerActivity, Uri.parse(pathOrUri))
-                            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-                        }
-                        pathOrUri.startsWith("file://") -> {
-                            val f = File(Uri.parse(pathOrUri).path ?: "")
-                            if (f.exists()) {
-                                retriever.setDataSource(f.absolutePath)
-                                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-                            } else 0L
-                        }
-                        else -> {
-                            val f = File(pathOrUri)
-                            if (f.exists()) {
-                                retriever.setDataSource(f.absolutePath)
-                                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-                            } else 0L
-                        }
-                    }
-                } finally {
-                    try {
-                        retriever.release()
-                    } catch (_: Throwable) {
-                    }
-                }
-            } catch (_: Throwable) {
-                0L
-            }
-
-            if (dur > 0L) {
-                withContext(Dispatchers.Main) {
-                    if (knownDurationMs <= 0L) {
-                        knownDurationMs = dur
-                        binding.tvTotalDuration.text = FormatUtils.formatDuration(dur)
-                    }
-                }
-            }
-        }
-    }
-
     private fun resolveMediaUri(): Uri {
         return when {
             videoUrlOrPath.startsWith("http://") ||
@@ -260,7 +264,6 @@ class VideoPlayerActivity : AppCompatActivity() {
 
         exoPlayer?.release()
 
-        // Tüm donanım + yazılım (dav1d / c2.android.av1) çözücülerini sırayla deneyen esnek MediaCodecSelector
         val permissiveSelector = MediaCodecSelector { mimeType, requiresSecure, requiresTunneling ->
             val defaultList = MediaCodecUtil.getDecoderInfos(mimeType, requiresSecure, requiresTunneling)
             if (defaultList.isNotEmpty() || requiresSecure) {
@@ -279,7 +282,6 @@ class VideoPlayerActivity : AppCompatActivity() {
             setEnableDecoderFallback(true)
         }
 
-        // Matroska (.mkv) Cues indeksini bozmayan temiz DefaultExtractorsFactory
         val extractorsFactory = DefaultExtractorsFactory()
             .setConstantBitrateSeekingEnabled(true)
 
@@ -291,16 +293,16 @@ class VideoPlayerActivity : AppCompatActivity() {
         val dataSourceFactory = DefaultDataSource.Factory(this, okHttpFactory)
         val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory, extractorsFactory)
 
-        // MPV sınıfı hızlı başlangıç ve sarma tamponu (250ms ilk kare, 10sn geri tampon)
+        // Orijinal APK 0 ms yerel başlangıç için minimum bufferForPlaybackMs (100ms)
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
                 15_000,
                 50_000,
-                250,
-                800
+                100,
+                400
             )
             .setBackBuffer(10_000, true)
-            .setPrioritizeTimeOverSizeThresholds(false)
+            .setPrioritizeTimeOverSizeThresholds(true)
             .build()
 
         exoPlayer = ExoPlayer.Builder(this, renderersFactory)
@@ -315,9 +317,12 @@ class VideoPlayerActivity : AppCompatActivity() {
 
                 player.addListener(object : Player.Listener {
                     override fun onPlaybackStateChanged(playbackState: Int) {
+                        // Yerel videolarda gereksiz buffering halkasını gösterme, sadece ağ akışında göster
                         binding.pbVideoBuffering.visibility =
-                            if (playbackState == Player.STATE_BUFFERING) View.VISIBLE else View.GONE
+                            if (playbackState == Player.STATE_BUFFERING && isNetworkStream()) View.VISIBLE else View.GONE
+
                         if (playbackState == Player.STATE_READY) {
+                            binding.pbVideoBuffering.visibility = View.GONE
                             val dur = resolveEffectiveDuration(player)
                             if (dur > 0L) {
                                 binding.tvTotalDuration.text = FormatUtils.formatDuration(dur)
@@ -327,7 +332,14 @@ class VideoPlayerActivity : AppCompatActivity() {
                                 deferredSeekOnReadyMs = -1L
                                 player.seekTo(target)
                             }
+                            updateSubtitleButtonIcon(player)
+                        } else if (playbackState == Player.STATE_ENDED) {
+                            handleVideoEnded()
                         }
+                    }
+
+                    override fun onTracksChanged(tracks: Tracks) {
+                        updateSubtitleButtonIcon(player)
                     }
 
                     override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -347,12 +359,11 @@ class VideoPlayerActivity : AppCompatActivity() {
                             0 -> {
                                 errorRecoveryCount = 1
                                 preferSoftwareDecoder = !preferSoftwareDecoder
-                                binding.tvCodecBadge.text = if (preferSoftwareDecoder) "SW-FFmpeg" else "HW+FFmpeg"
+                                binding.tvCodecBadge.text = if (preferSoftwareDecoder) "SW" else "HW+"
                                 initializePlayer(startPositionMs = resumePos, isErrorRecovery = true)
                             }
                             1 -> {
                                 errorRecoveryCount = 2
-                                // İkincil metin/altyazı izi hatasıysa devre dışı bırakıp aynı konumdan devam et
                                 player.trackSelectionParameters = player.trackSelectionParameters
                                     .buildUpon()
                                     .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
@@ -364,8 +375,7 @@ class VideoPlayerActivity : AppCompatActivity() {
                                 player.playWhenReady = true
                             }
                             else -> {
-                                // Yerel dosyada özel AV1/DDP5.1 donanım uyuşmazlığı varsa doğrudan yerleşik Platform VideoView'a geç
-                                if (!videoUrlOrPath.startsWith("http")) {
+                                if (!isNetworkStream()) {
                                     switchToPlatformVideoViewFallback(resumePos)
                                 } else {
                                     Toast.makeText(
@@ -382,6 +392,38 @@ class VideoPlayerActivity : AppCompatActivity() {
 
         uiHandler.removeCallbacks(progressUpdater)
         uiHandler.post(progressUpdater)
+    }
+
+    private fun updateSubtitleButtonIcon(player: ExoPlayer) {
+        val isDisabled = player.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)
+        val hasSelectedText = !isDisabled && player.currentTracks.groups.any { it.type == C.TRACK_TYPE_TEXT && it.isSelected }
+        binding.btnQuickSubtitleTrack.setImageResource(
+            if (hasSelectedText) R.drawable.ic_vp_subtitles else R.drawable.ic_subtitles_off
+        )
+    }
+
+    private fun handleVideoEnded() {
+        when (repeatModeState) {
+            2 -> {
+                // Birini tekrarla
+                exoPlayer?.seekTo(0L)
+                exoPlayer?.play()
+            }
+            1 -> {
+                // Tüm klasörü tekrarla / sıradakine geç
+                if (playlistUrls.size > 1) {
+                    playNextInPlaylist()
+                } else {
+                    exoPlayer?.seekTo(0L)
+                    exoPlayer?.play()
+                }
+            }
+            else -> {
+                // Tek oynat
+                binding.btnPlayPause.setImageResource(R.drawable.ic_vp_play)
+                binding.playerControlsOverlay.visibility = View.VISIBLE
+            }
+        }
     }
 
     private fun switchToPlatformVideoViewFallback(startPosMs: Long) {
@@ -423,14 +465,58 @@ class VideoPlayerActivity : AppCompatActivity() {
         }
         val uri = resolveMediaUri()
         binding.tvVideoTitle.text = videoTitle
-        preloadLocalVideoDuration(videoUrlOrPath)
-        if (initialPosMs > 0L) {
-            player.setMediaItem(MediaItem.fromUri(uri), initialPosMs)
-        } else {
-            player.setMediaItem(MediaItem.fromUri(uri))
+
+        // Aynı klasörde aynı isimli .srt / .vtt varsa veya kullanıcı harici altyazı seçtiyse otomatik bağla
+        val subtitleConfigs = ArrayList<MediaItem.SubtitleConfiguration>()
+        val extSub = externalSubtitleUri ?: findMatchingLocalSubtitle(videoUrlOrPath)
+        if (extSub != null) {
+            val subPath = extSub.toString().lowercase(Locale.ROOT)
+            val subMime = when {
+                subPath.endsWith(".vtt") -> MimeTypes.TEXT_VTT
+                subPath.endsWith(".ass") || subPath.endsWith(".ssa") -> MimeTypes.TEXT_SSA
+                else -> MimeTypes.APPLICATION_SUBRIP
+            }
+            subtitleConfigs.add(
+                MediaItem.SubtitleConfiguration.Builder(extSub)
+                    .setMimeType(subMime)
+                    .setLanguage("tr")
+                    .setLabel("Harici Altyazı")
+                    .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                    .build()
+            )
         }
+
+        val mediaItem = MediaItem.Builder()
+            .setUri(uri)
+            .setSubtitleConfigurations(subtitleConfigs)
+            .build()
+
+        if (initialPosMs > 0L) {
+            player.setMediaItem(mediaItem, initialPosMs)
+        } else {
+            player.setMediaItem(mediaItem)
+        }
+        player.setPlaybackSpeed(currentSpeed)
         player.playWhenReady = true
         player.prepare()
+    }
+
+    private fun findMatchingLocalSubtitle(videoPath: String): Uri? {
+        if (videoPath.startsWith("http") || videoPath.startsWith("content://")) return null
+        return try {
+            val vf = File(videoPath)
+            val parent = vf.parentFile ?: return null
+            val base = vf.nameWithoutExtension
+            for (ext in listOf("srt", "vtt", "ass", "ssa")) {
+                val cand = File(parent, "$base.$ext")
+                if (cand.exists() && cand.length() > 0L) {
+                    return Uri.fromFile(cand)
+                }
+            }
+            null
+        } catch (_: Throwable) {
+            null
+        }
     }
 
     private fun executeSmartSeek(targetMs: Long, forceImmediate: Boolean) {
@@ -448,7 +534,7 @@ class VideoPlayerActivity : AppCompatActivity() {
         val player = exoPlayer ?: return
         val now = SystemClock.elapsedRealtime()
         if (player.playbackState == Player.STATE_READY && player.duration > 0L) {
-            if (forceImmediate || (now - lastLiveSeekRealtimeMs >= 320L)) {
+            if (forceImmediate || (now - lastLiveSeekRealtimeMs >= 220L)) {
                 lastLiveSeekRealtimeMs = now
                 player.seekTo(clampedTarget)
             }
@@ -460,110 +546,128 @@ class VideoPlayerActivity : AppCompatActivity() {
         }
     }
 
+    private fun playPreviousInPlaylist() {
+        val curPos = if (usingPlatformFallback) binding.platformVideoView.currentPosition.toLong() else (exoPlayer?.currentPosition ?: 0L)
+        if (curPos > 4_000L || playlistUrls.size <= 1) {
+            seekByDelta(-10_000L)
+        } else {
+            externalSubtitleUri = null
+            playlistIndex = if (playlistIndex > 0) playlistIndex - 1 else playlistUrls.lastIndex
+            videoUrlOrPath = playlistUrls[playlistIndex]
+            videoTitle = playlistTitles.getOrElse(playlistIndex) { videoUrlOrPath.substringAfterLast('/') }
+            initializePlayer(startPositionMs = 0L, isErrorRecovery = false)
+        }
+    }
+
+    private fun playNextInPlaylist() {
+        if (playlistUrls.size <= 1) {
+            seekByDelta(10_000L)
+        } else {
+            externalSubtitleUri = null
+            playlistIndex = if (isShuffleEnabled && playlistUrls.size > 2) {
+                (playlistUrls.indices - playlistIndex).random()
+            } else {
+                (playlistIndex + 1) % playlistUrls.size
+            }
+            videoUrlOrPath = playlistUrls[playlistIndex]
+            videoTitle = playlistTitles.getOrElse(playlistIndex) { videoUrlOrPath.substringAfterLast('/') }
+            initializePlayer(startPositionMs = 0L, isErrorRecovery = false)
+        }
+    }
+
     private fun setupOverlayControls() {
         binding.btnVideoBack.setOnClickListener { finish() }
 
         binding.btnPlayPause.setOnClickListener {
-            togglePlayPause()
+            togglePlayPause(showSplash = false)
         }
 
         binding.tvCodecBadge.setOnClickListener {
             toggleHardwareSoftwareDecoder()
         }
 
-        binding.btnQuickAudioTrack.setOnClickListener {
-            showInteractiveTrackSelectorDialog(initialFocusAudio = true)
+        // Orijinal APK viewer/f: Dairesel yüzen Ses İzi ve Altyazı butonları kendi üzerinde PopupWindow açar
+        binding.btnQuickAudioTrack.setOnClickListener { anchor ->
+            showAudioTrackPopupWindow(anchor)
         }
 
-        binding.btnQuickSubtitleTrack.setOnClickListener {
-            showInteractiveTrackSelectorDialog(initialFocusAudio = false)
+        binding.btnQuickSubtitleTrack.setOnClickListener { anchor ->
+            showSubtitleTrackPopupWindow(anchor)
         }
 
-        // |◀ Önceki Video veya 10 sn Geri
+        binding.btnFloatingExpand.setOnClickListener {
+            cycleAspectRatio()
+        }
+
+        // Ana Satır: Önceki Video (|◀) ve Sonraki Video (▶|)
         binding.btnRewind10.setOnClickListener {
-            val curPos = if (usingPlatformFallback) binding.platformVideoView.currentPosition.toLong() else (exoPlayer?.currentPosition ?: 0L)
-            if (binding.llExtraVideoControls.visibility == View.VISIBLE) {
-                seekByDelta(-10_000L)
-            } else if (curPos > 4_000L || playlistUrls.size <= 1) {
-                seekByDelta(-10_000L)
-            } else {
-                playlistIndex = if (playlistIndex > 0) playlistIndex - 1 else playlistUrls.lastIndex
-                videoUrlOrPath = playlistUrls[playlistIndex]
-                videoTitle = playlistTitles.getOrElse(playlistIndex) { videoUrlOrPath.substringAfterLast('/') }
-                initializePlayer(startPositionMs = 0L, isErrorRecovery = false)
-            }
+            playPreviousInPlaylist()
         }
 
-        // ▶| Sonraki Video veya 10 sn İleri
         binding.btnForward10.setOnClickListener {
-            if (binding.llExtraVideoControls.visibility == View.VISIBLE || playlistUrls.size <= 1) {
-                seekByDelta(10_000L)
-            } else {
-                playlistIndex = (playlistIndex + 1) % playlistUrls.size
-                videoUrlOrPath = playlistUrls[playlistIndex]
-                videoTitle = playlistTitles.getOrElse(playlistIndex) { videoUrlOrPath.substringAfterLast('/') }
-                initializePlayer(startPositionMs = 0L, isErrorRecovery = false)
-            }
+            playNextInPlaylist()
         }
 
+        // Açılır Satır 1: -10sn (↺10) ve +10sn (↻10)
+        binding.btnExtraRewind10.setOnClickListener {
+            seekByDelta(-10_000L)
+        }
+
+        binding.btnExtraForward10.setOnClickListener {
+            seekByDelta(10_000L)
+        }
+
+        // Orijinal APK @id/more & @id/less: Açılır Satır 1'i (control_buttons_line1) aç/kapat
         binding.btnSubtitlesAndAudio.setOnClickListener {
             val isVisible = binding.llExtraVideoControls.visibility == View.VISIBLE
             binding.llExtraVideoControls.visibility = if (isVisible) View.GONE else View.VISIBLE
-            if (!isVisible) {
-                binding.btnRewind10.setImageResource(R.drawable.ic_vp_rewind_10)
-                binding.btnForward10.setImageResource(R.drawable.ic_vp_forward_10)
-                binding.btnSubtitlesAndAudio.setImageResource(R.drawable.ic_vp_expand_down)
-            } else {
-                binding.btnRewind10.setImageResource(R.drawable.ic_vp_prev)
-                binding.btnForward10.setImageResource(R.drawable.ic_vp_next)
-                binding.btnSubtitlesAndAudio.setImageResource(R.drawable.ic_vp_rotate_ccw)
-            }
+            binding.btnSubtitlesAndAudio.rotation = if (isVisible) 180f else 0f
         }
 
         binding.btnMuteToggle.setOnClickListener {
             isShuffleEnabled = !isShuffleEnabled
             exoPlayer?.shuffleModeEnabled = isShuffleEnabled
             binding.btnMuteToggle.alpha = if (isShuffleEnabled) 1.0f else 0.65f
+            Toast.makeText(
+                this,
+                if (isShuffleEnabled) "Karışık oynatma açık" else "Karışık oynatma kapalı",
+                Toast.LENGTH_SHORT
+            ).show()
         }
 
+        // Orijinal APK 3 Kademeli Tekrar Modu: Tek Oynat (ic_play_one) -> Tümünü Tekrarla (ic_vp_repeat_off) -> Birini Tekrarla (ic_vp_repeat_one)
         binding.btnRepeatToggle.setOnClickListener {
-            isRepeatOne = !isRepeatOne
-            exoPlayer?.repeatMode = if (isRepeatOne) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
-            binding.btnRepeatToggle.setImageResource(
-                if (isRepeatOne) R.drawable.ic_vp_repeat_one else R.drawable.ic_vp_repeat_off
-            )
-            binding.btnRepeatToggle.alpha = if (isRepeatOne) 1.0f else 0.65f
+            repeatModeState = (repeatModeState + 1) % 3
+            when (repeatModeState) {
+                0 -> {
+                    exoPlayer?.repeatMode = Player.REPEAT_MODE_OFF
+                    binding.btnRepeatToggle.setImageResource(R.drawable.ic_play_one)
+                    Toast.makeText(this, "Tek video oynat", Toast.LENGTH_SHORT).show()
+                }
+                1 -> {
+                    exoPlayer?.repeatMode = Player.REPEAT_MODE_ALL
+                    binding.btnRepeatToggle.setImageResource(R.drawable.ic_vp_repeat_off)
+                    Toast.makeText(this, "Tümünü tekrarla", Toast.LENGTH_SHORT).show()
+                }
+                else -> {
+                    exoPlayer?.repeatMode = Player.REPEAT_MODE_ONE
+                    binding.btnRepeatToggle.setImageResource(R.drawable.ic_vp_repeat_one)
+                    Toast.makeText(this, "Bu videoyu tekrarla", Toast.LENGTH_SHORT).show()
+                }
+            }
         }
 
-        binding.btnPlaybackSpeed.setOnClickListener {
-            val speeds = floatArrayOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f)
-            val nextIdx = (speeds.indexOfFirst { it == currentSpeed } + 1) % speeds.size
-            currentSpeed = speeds[nextIdx]
-            exoPlayer?.setPlaybackSpeed(currentSpeed)
-            val label = if (currentSpeed == 1.0f) "1X" else "${currentSpeed}X"
-            binding.btnPlaybackSpeed.text = label
+        // Orijinal APK @id/speed: Tıklanınca 0.25x..2.0x açılır hız seçici PopupWindow açar
+        binding.btnPlaybackSpeed.setOnClickListener { anchor ->
+            showPlaybackSpeedPopupWindow(anchor)
         }
 
-        binding.btnTrackSelector.setOnClickListener {
-            showInteractiveTrackSelectorDialog(initialFocusAudio = false)
+        binding.btnTrackSelector.setOnClickListener { anchor ->
+            showSubtitleTrackPopupWindow(anchor)
         }
 
         binding.btnAspectRatio.setOnClickListener {
-            val nextMode = when (binding.exoPlayerView.resizeMode) {
-                androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT -> {
-                    binding.btnAspectRatio.setImageResource(R.drawable.ic_vp_resize_crop)
-                    androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                }
-                androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> {
-                    binding.btnAspectRatio.setImageResource(R.drawable.ic_vp_resize_stretch)
-                    androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FILL
-                }
-                else -> {
-                    binding.btnAspectRatio.setImageResource(R.drawable.ic_vp_resize_fit)
-                    androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
-                }
-            }
-            binding.exoPlayerView.resizeMode = nextMode
+            cycleAspectRatio()
         }
 
         binding.btnRotateScreen.setOnClickListener {
@@ -610,16 +714,22 @@ class VideoPlayerActivity : AppCompatActivity() {
             }
         })
 
+        // Orijinal APK Sağ Üst 3 Nokta Menüsü: Altyazı Seç | Altyazı Boyutu | Çözücü | Şununla Aç | Özellikler
         binding.btnVideoMore.setOnClickListener { v ->
             val popup = PopupMenu(this, v)
-            popup.menu.add(0, 1, 0, "Ses İzi ve Altyazı Seçimi")
-            popup.menu.add(0, 2, 1, "Çözücü Değiştir (Donanım HW / Yazılım FFmpeg)")
-            popup.menu.add(0, 3, 2, "Şununla aç (Harici Video Oynatıcı)")
+            popup.menu.add(0, 1, 0, "Altyazı dosyası seç (.srt / .vtt)")
+            popup.menu.add(0, 2, 1, "Altyazı boyutu")
+            popup.menu.add(0, 3, 2, "Ses İzi ve Altyazı Seçimi")
+            popup.menu.add(0, 4, 3, "Çözücü Değiştir (HW+ / SW)")
+            popup.menu.add(0, 5, 4, "Şununla aç")
+            popup.menu.add(0, 6, 5, "Özellikler")
             popup.setOnMenuItemClickListener { item ->
                 when (item.itemId) {
-                    1 -> showInteractiveTrackSelectorDialog(initialFocusAudio = false)
-                    2 -> toggleHardwareSoftwareDecoder()
-                    3 -> {
+                    1 -> externalSubtitleLauncher.launch(arrayOf("*/*"))
+                    2 -> showSubtitleSizeDialog()
+                    3 -> showInteractiveTrackSelectorDialog(initialFocusAudio = false)
+                    4 -> toggleHardwareSoftwareDecoder()
+                    5 -> {
                         val fi = FileItem(
                             id = videoUrlOrPath,
                             name = videoTitle,
@@ -628,16 +738,362 @@ class VideoPlayerActivity : AppCompatActivity() {
                             size = 0L,
                             lastModified = System.currentTimeMillis(),
                             mimeType = "video/*",
-                            sourceType = if (videoUrlOrPath.startsWith("http")) FileSourceType.CLOUD else FileSourceType.LOCAL,
+                            sourceType = if (isNetworkStream()) FileSourceType.CLOUD else FileSourceType.LOCAL,
                             downloadUrl = videoUrlOrPath
                         )
                         LocalFileRepository.openWithExternalChooser(this, fi, authToken)
                     }
+                    6 -> showVideoPropertiesDialog()
                 }
                 true
             }
             popup.show()
         }
+    }
+
+    private fun cycleAspectRatio() {
+        videoZoomScale = 1.0f
+        binding.exoPlayerView.videoSurfaceView?.apply {
+            scaleX = 1.0f
+            scaleY = 1.0f
+        }
+        val nextMode = when (binding.exoPlayerView.resizeMode) {
+            androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT -> {
+                binding.btnAspectRatio.setImageResource(R.drawable.ic_vp_resize_crop)
+                androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+            }
+            androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> {
+                binding.btnAspectRatio.setImageResource(R.drawable.ic_vp_resize_stretch)
+                androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FILL
+            }
+            else -> {
+                binding.btnAspectRatio.setImageResource(R.drawable.ic_vp_resize_fit)
+                androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+            }
+        }
+        binding.exoPlayerView.resizeMode = nextMode
+    }
+
+    /**
+     * Orijinal APK viewer/f: Ses İzi (🎵) dairesel butonuna tıklanınca hemen üstünde açılan koyu PopupWindow
+     */
+    private fun showAudioTrackPopupWindow(anchor: View) {
+        val p = exoPlayer ?: return
+        val density = resources.displayMetrics.density
+        val audioGroups = p.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundResource(R.drawable.bg_player_control_popup)
+            val pad = (10 * density).toInt()
+            setPadding(pad, pad, pad, pad)
+        }
+
+        var popup: PopupWindow? = null
+
+        val header = TextView(this).apply {
+            text = "Ses İzi"
+            textSize = 13.5f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(Color.parseColor("#80CBC4"))
+            setPadding((10 * density).toInt(), (4 * density).toInt(), (10 * density).toInt(), (6 * density).toInt())
+        }
+        container.addView(header)
+
+        var trackCounter = 0
+        audioGroups.forEach { group ->
+            for (tIdx in 0 until group.length) {
+                trackCounter++
+                val fmt = group.getTrackFormat(tIdx)
+                val lang = fmt.language?.let { Locale(it).displayLanguage }?.takeIf { it.isNotBlank() } ?: "Ses $trackCounter"
+                val title = fmt.label?.takeIf { it.isNotBlank() } ?: ""
+                val ch = if (fmt.channelCount > 0) "${fmt.channelCount}ch" else ""
+                val label = listOf(lang, title, ch).filter { it.isNotBlank() }.joinToString(" • ")
+                val selected = group.isTrackSelected(tIdx)
+
+                val row = TextView(this).apply {
+                    text = if (selected) "✓  $label" else "    $label"
+                    textSize = 14f
+                    setTextColor(if (selected) Color.parseColor("#80CBC4") else Color.WHITE)
+                    val hPad = (12 * density).toInt()
+                    val vPad = (9 * density).toInt()
+                    setPadding(hPad, vPad, hPad, vPad)
+                    setBackgroundResource(android.R.drawable.list_selector_background)
+                    setOnClickListener {
+                        p.trackSelectionParameters = p.trackSelectionParameters
+                            .buildUpon()
+                            .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
+                            .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, listOf(tIdx)))
+                            .build()
+                        popup?.dismiss()
+                    }
+                }
+                container.addView(row)
+            }
+        }
+
+        if (trackCounter == 0) {
+            container.addView(TextView(this).apply {
+                text = "Alternatif ses izi yok"
+                textSize = 13.5f
+                setTextColor(Color.LTGRAY)
+                val pad = (10 * density).toInt()
+                setPadding(pad, pad, pad, pad)
+            })
+        }
+
+        showAnchoredControlPopup(anchor, container).also { popup = it }
+    }
+
+    /**
+     * Orijinal APK viewer/f: Altyazı (💬) dairesel butonuna tıklanınca hemen üstünde açılan koyu PopupWindow
+     */
+    private fun showSubtitleTrackPopupWindow(anchor: View) {
+        val p = exoPlayer ?: return
+        val density = resources.displayMetrics.density
+        val textGroups = p.currentTracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
+        val isTextDisabled = p.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)
+        val anySubSelected = !isTextDisabled && textGroups.any { it.isSelected }
+
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundResource(R.drawable.bg_player_control_popup)
+            val pad = (10 * density).toInt()
+            setPadding(pad, pad, pad, pad)
+        }
+
+        var popup: PopupWindow? = null
+
+        val header = TextView(this).apply {
+            text = "Altyazı"
+            textSize = 13.5f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(Color.parseColor("#80CBC4"))
+            setPadding((10 * density).toInt(), (4 * density).toInt(), (10 * density).toInt(), (6 * density).toInt())
+        }
+        container.addView(header)
+
+        // 1) Altyazı Kapalı
+        container.addView(TextView(this).apply {
+            text = if (!anySubSelected) "✓  Altyazı kapalı" else "    Altyazı kapalı"
+            textSize = 14f
+            setTextColor(if (!anySubSelected) Color.parseColor("#80CBC4") else Color.WHITE)
+            val hPad = (12 * density).toInt()
+            val vPad = (9 * density).toInt()
+            setPadding(hPad, vPad, hPad, vPad)
+            setBackgroundResource(android.R.drawable.list_selector_background)
+            setOnClickListener {
+                p.trackSelectionParameters = p.trackSelectionParameters
+                    .buildUpon()
+                    .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                    .build()
+                updateSubtitleButtonIcon(p)
+                popup?.dismiss()
+            }
+        })
+
+        var subCount = 0
+        textGroups.forEach { group ->
+            for (tIdx in 0 until group.length) {
+                subCount++
+                val fmt = group.getTrackFormat(tIdx)
+                val lang = fmt.language?.let { Locale(it).displayLanguage }?.takeIf { it.isNotBlank() } ?: "Altyazı $subCount"
+                val title = fmt.label?.takeIf { it.isNotBlank() } ?: ""
+                val label = listOf(lang, title).filter { it.isNotBlank() }.joinToString(" • ")
+                val selected = !isTextDisabled && group.isTrackSelected(tIdx)
+
+                container.addView(TextView(this).apply {
+                    text = if (selected) "✓  $label" else "    $label"
+                    textSize = 14f
+                    setTextColor(if (selected) Color.parseColor("#80CBC4") else Color.WHITE)
+                    val hPad = (12 * density).toInt()
+                    val vPad = (9 * density).toInt()
+                    setPadding(hPad, vPad, hPad, vPad)
+                    setBackgroundResource(android.R.drawable.list_selector_background)
+                    setOnClickListener {
+                        p.trackSelectionParameters = p.trackSelectionParameters
+                            .buildUpon()
+                            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                            .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, listOf(tIdx)))
+                            .build()
+                        updateSubtitleButtonIcon(p)
+                        popup?.dismiss()
+                    }
+                })
+            }
+        }
+
+        // Harici altyazı seç (.srt / .vtt) ve Altyazı boyutu
+        container.addView(TextView(this).apply {
+            text = "＋  Altyazı dosyası seç..."
+            textSize = 13.5f
+            setTextColor(Color.parseColor("#80CBC4"))
+            val hPad = (12 * density).toInt()
+            val vPad = (9 * density).toInt()
+            setPadding(hPad, vPad, hPad, vPad)
+            setBackgroundResource(android.R.drawable.list_selector_background)
+            setOnClickListener {
+                popup?.dismiss()
+                externalSubtitleLauncher.launch(arrayOf("*/*"))
+            }
+        })
+
+        container.addView(TextView(this).apply {
+            text = "Aa  Altyazı boyutu"
+            textSize = 13.5f
+            setTextColor(Color.WHITE)
+            val hPad = (12 * density).toInt()
+            val vPad = (9 * density).toInt()
+            setPadding(hPad, vPad, hPad, vPad)
+            setBackgroundResource(android.R.drawable.list_selector_background)
+            setOnClickListener {
+                popup?.dismiss()
+                showSubtitleSizeDialog()
+            }
+        })
+
+        showAnchoredControlPopup(anchor, container).also { popup = it }
+    }
+
+    /**
+     * Orijinal APK viewer/f: Oynatma Hızı (1.0x) butonuna tıklanınca üstünde açılan hız listesi (0.25x..2.0x)
+     */
+    private fun showPlaybackSpeedPopupWindow(anchor: View) {
+        val density = resources.displayMetrics.density
+        val speeds = floatArrayOf(0.25f, 0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
+
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundResource(R.drawable.bg_player_control_popup)
+            val pad = (8 * density).toInt()
+            setPadding(pad, pad, pad, pad)
+        }
+
+        var popup: PopupWindow? = null
+
+        for (spd in speeds) {
+            val selected = abs(currentSpeed - spd) < 0.01f
+            val label = "${spd}x"
+            container.addView(TextView(this).apply {
+                text = if (selected) "✓  $label" else "    $label"
+                textSize = 14f
+                setTextColor(if (selected) Color.parseColor("#80CBC4") else Color.WHITE)
+                val hPad = (16 * density).toInt()
+                val vPad = (7 * density).toInt()
+                setPadding(hPad, vPad, hPad, vPad)
+                setBackgroundResource(android.R.drawable.list_selector_background)
+                setOnClickListener {
+                    currentSpeed = spd
+                    exoPlayer?.setPlaybackSpeed(spd)
+                    binding.btnPlaybackSpeed.text = label
+                    popup?.dismiss()
+                }
+            })
+        }
+
+        showAnchoredControlPopup(anchor, container).also { popup = it }
+    }
+
+    private fun showAnchoredControlPopup(anchor: View, content: View): PopupWindow {
+        val density = resources.displayMetrics.density
+        content.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
+        val popW = content.measuredWidth.coerceAtLeast((170 * density).toInt())
+        val popH = content.measuredHeight
+
+        val popup = PopupWindow(
+            content,
+            popW,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            true
+        ).apply {
+            isOutsideTouchable = true
+            elevation = 12f * density
+        }
+
+        val loc = IntArray(2)
+        anchor.getLocationOnScreen(loc)
+        val screenW = resources.displayMetrics.widthPixels
+        val x = (loc[0] + anchor.width / 2 - popW / 2).coerceIn((8 * density).toInt(), (screenW - popW - (8 * density).toInt()).coerceAtLeast(0))
+        val y = (loc[1] - popH - (8 * density).toInt()).coerceAtLeast((24 * density).toInt())
+        popup.showAtLocation(binding.videoPlayerRoot, Gravity.NO_GRAVITY, x, y)
+        return popup
+    }
+
+    /**
+     * Orijinal APK res/layout/dialog_video_subtitle.xml: Altyazı Boyutu (SeekBar) Diyaloğu
+     */
+    private fun showSubtitleSizeDialog() {
+        val density = resources.displayMetrics.density
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val padH = (24 * density).toInt()
+            val padV = (18 * density).toInt()
+            setPadding(padH, padV, padH, padV)
+        }
+
+        val tvPreview = TextView(this).apply {
+            text = "Örnek Altyazı Metni (${subtitleTextSizeSp.toInt()} sp)"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, subtitleTextSizeSp)
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(0, 0, 0, (14 * density).toInt())
+        }
+
+        val seekBar = SeekBar(this).apply {
+            max = 24 // 12sp .. 36sp
+            progress = (subtitleTextSizeSp.toInt() - 12).coerceIn(0, 24)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
+                    val newSp = (12 + p).toFloat()
+                    subtitleTextSizeSp = newSp
+                    tvPreview.text = "Örnek Altyazı Metni (${newSp.toInt()} sp)"
+                    tvPreview.setTextSize(TypedValue.COMPLEX_UNIT_SP, newSp)
+                    binding.exoPlayerView.subtitleView?.setFixedTextSize(TypedValue.COMPLEX_UNIT_SP, newSp)
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+
+        layout.addView(tvPreview)
+        layout.addView(seekBar)
+
+        AlertDialog.Builder(this)
+            .setTitle("Altyazı boyutu")
+            .setView(layout)
+            .setPositiveButton("TAMAM", null)
+            .show()
+    }
+
+    private fun showVideoPropertiesDialog() {
+        val p = exoPlayer
+        val vf = p?.videoFormat
+        val af = p?.audioFormat
+        val f = File(videoUrlOrPath)
+        val sdf = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale("tr", "TR"))
+        val details = buildString {
+            append("Dosya: $videoTitle\n")
+            if (f.exists()) {
+                append("Boyut: ${FormatUtils.formatSizeDetailed(f.length())}\n")
+                append("Tarih: ${sdf.format(Date(f.lastModified()))}\n")
+                append("Konum: ${f.absolutePath}\n")
+            }
+            val dur = resolveEffectiveDuration(p)
+            if (dur > 0L) {
+                append("Süre: ${FormatUtils.formatDuration(dur)}\n")
+            }
+            if (vf != null) {
+                append("Video: ${vf.sampleMimeType ?: "-"} (${vf.width}x${vf.height})\n")
+            }
+            if (af != null) {
+                append("Ses: ${af.sampleMimeType ?: "-"} (${af.channelCount} kanal, ${af.sampleRate} Hz)")
+            }
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Özellikler")
+            .setMessage(details.trim())
+            .setPositiveButton("TAMAM", null)
+            .show()
     }
 
     private fun toggleHardwareSoftwareDecoder() {
@@ -647,38 +1103,54 @@ class VideoPlayerActivity : AppCompatActivity() {
             exoPlayer?.currentPosition ?: 0L
         }
         preferSoftwareDecoder = !preferSoftwareDecoder
-        binding.tvCodecBadge.text = if (preferSoftwareDecoder) "SW-FFmpeg" else "HW+FFmpeg"
+        binding.tvCodecBadge.text = if (preferSoftwareDecoder) "SW" else "HW+"
         initializePlayer(startPositionMs = pos.coerceAtLeast(0L), isErrorRecovery = false)
     }
 
-    private fun togglePlayPause() {
+    private fun togglePlayPause(showSplash: Boolean = true) {
         if (usingPlatformFallback) {
             val vv = binding.platformVideoView
             if (vv.isPlaying) {
                 vv.pause()
                 binding.btnPlayPause.setImageResource(R.drawable.ic_vp_play)
+                if (showSplash) triggerCenterPlayPauseSplash(isNowPlaying = false)
             } else {
                 vv.start()
                 binding.btnPlayPause.setImageResource(R.drawable.ic_vp_pause)
+                if (showSplash) triggerCenterPlayPauseSplash(isNowPlaying = true)
             }
             return
         }
         val p = exoPlayer ?: return
         if (p.isPlaying) {
             p.pause()
+            if (showSplash) triggerCenterPlayPauseSplash(isNowPlaying = false)
         } else {
             if (p.playbackState == Player.STATE_IDLE) {
                 p.prepare()
             }
             p.play()
+            if (showSplash) triggerCenterPlayPauseSplash(isNowPlaying = true)
         }
     }
 
-    /**
-     * Video 01:08 - 01:14'te Kullanıcının İstediği Etkileşimli Ses İzi ve Altyazı Seçim Diyaloğu:
-     * - Film içindeki tüm gömülü Ses İzlerini (C.TRACK_TYPE_AUDIO: Dil, Etiket, Kanal, Kodek) radyo butonlarıyla listeler ve seçtirir.
-     * - Film içindeki tüm gömülü Altyazıları (C.TRACK_TYPE_TEXT: "Altyazı Kapalı" + Tüm diller/formatlar) radyo butonlarıyla listeler ve seçtirir.
-     */
+    private fun triggerCenterPlayPauseSplash(isNowPlaying: Boolean) {
+        binding.iconSplash.setImageResource(if (isNowPlaying) R.drawable.ic_vp_play else R.drawable.ic_vp_pause)
+        binding.iconSplash.alpha = 1f
+        binding.iconSplash.scaleX = 0.85f
+        binding.iconSplash.scaleY = 0.85f
+        binding.iconSplash.visibility = View.VISIBLE
+        binding.iconSplash.animate()
+            .scaleX(1.15f)
+            .scaleY(1.15f)
+            .alpha(0f)
+            .setDuration(420L)
+            .withEndAction {
+                binding.iconSplash.visibility = View.GONE
+            }
+            .start()
+    }
+
     private fun showInteractiveTrackSelectorDialog(initialFocusAudio: Boolean) {
         val p = exoPlayer
         if (p == null) {
@@ -708,7 +1180,6 @@ class VideoPlayerActivity : AppCompatActivity() {
         val audioGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
         val textGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
 
-        // 1. BÖLÜM: SES İZİ SEÇİMİ
         val tvAudioHeader = TextView(this).apply {
             text = "🎵 Ses İzi Seçimi (${audioGroups.sumOf { it.length }})"
             textSize = 15.5f
@@ -779,7 +1250,6 @@ class VideoPlayerActivity : AppCompatActivity() {
             root.addView(rgAudio)
         }
 
-        // 2. BÖLÜM: ALTYAZI SEÇİMİ
         val tvSubHeader = TextView(this).apply {
             text = "💬 Altyazı Seçimi (${textGroups.sumOf { it.length }})"
             textSize = 15.5f
@@ -844,7 +1314,6 @@ class VideoPlayerActivity : AppCompatActivity() {
         }
         root.addView(rgSub)
 
-        // 3. BÖLÜM: KODEK & ÇÖZÜCÜ BİLGİSİ
         val vf = p.videoFormat
         val af = p.audioFormat
         val infoText = buildString {
@@ -893,6 +1362,7 @@ class VideoPlayerActivity : AppCompatActivity() {
                     .build()
                 Toast.makeText(this, "Altyazı: ${chosen.label}", Toast.LENGTH_SHORT).show()
             }
+            updateSubtitleButtonIcon(p)
             dialogRef?.dismiss()
         }
 
@@ -914,10 +1384,33 @@ class VideoPlayerActivity : AppCompatActivity() {
         var downX = 0f
         var downY = 0f
         var scrubStartPosMs = 0L
-        var gestureMode = 0 // 0 = Yok, 1 = Yatay Video Sarma, 2 = Dikey Ses/Parlaklık
+        var gestureMode = 0 // 0 = Yok, 1 = Yatay Video Sarma, 2 = Dikey Ses/Parlaklık, 3 = İki Parmak Zoom
         var isLongPress2x = false
         var startVolume = 0
         var startBrightness = 0.5f
+
+        val scaleGestureDetector = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
+                if (isControlsLocked) return false
+                gestureMode = 3
+                return true
+            }
+
+            override fun onScale(detector: ScaleGestureDetector): Boolean {
+                if (isControlsLocked) return false
+                videoZoomScale = (videoZoomScale * detector.scaleFactor).coerceIn(0.5f, 3.0f)
+                binding.exoPlayerView.videoSurfaceView?.apply {
+                    scaleX = videoZoomScale
+                    scaleY = videoZoomScale
+                }
+                showCenterOverlayLabel("${(videoZoomScale * 100).toInt()}%")
+                return true
+            }
+
+            override fun onScaleEnd(detector: ScaleGestureDetector) {
+                hideCenterOverlayLabelDelayed(500L)
+            }
+        })
 
         val gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
@@ -941,8 +1434,7 @@ class VideoPlayerActivity : AppCompatActivity() {
                     e.x < leftBoundary -> seekByDelta(-10_000L)
                     e.x > rightBoundary -> seekByDelta(10_000L)
                     else -> {
-                        togglePlayPause()
-                        binding.playerControlsOverlay.visibility = View.VISIBLE
+                        togglePlayPause(showSplash = true)
                     }
                 }
                 return true
@@ -960,7 +1452,10 @@ class VideoPlayerActivity : AppCompatActivity() {
         })
 
         val touchHandler = View.OnTouchListener { _, event ->
-            gestureDetector.onTouchEvent(event)
+            scaleGestureDetector.onTouchEvent(event)
+            if (!scaleGestureDetector.isInProgress) {
+                gestureDetector.onTouchEvent(event)
+            }
             if (isControlsLocked) return@OnTouchListener true
 
             val width = binding.videoPlayerRoot.width.coerceAtLeast(1).toFloat()
@@ -982,8 +1477,12 @@ class VideoPlayerActivity : AppCompatActivity() {
                     startBrightness = if (curBr in 0.01f..1.0f) curBr else 0.5f
                 }
 
+                MotionEvent.ACTION_POINTER_DOWN -> {
+                    gestureMode = 3
+                }
+
                 MotionEvent.ACTION_MOVE -> {
-                    if (isLongPress2x) return@OnTouchListener true
+                    if (isLongPress2x || gestureMode == 3 || event.pointerCount > 1) return@OnTouchListener true
                     val dx = event.x - downX
                     val dy = event.y - downY
 
@@ -991,7 +1490,7 @@ class VideoPlayerActivity : AppCompatActivity() {
                         if (abs(dx) > touchSlop && abs(dx) > abs(dy) * 1.2f) {
                             gestureMode = 1
                             isHorizontalScrubbing = true
-                        } else if (abs(dy) > touchSlop * 1.5f && abs(dy) > abs(dx) * 1.3f) {
+                        } else if (abs(dy) > touchSlop * 1.4f && abs(dy) > abs(dx) * 1.3f) {
                             gestureMode = 2
                         }
                     }
@@ -1012,17 +1511,18 @@ class VideoPlayerActivity : AppCompatActivity() {
                         showCenterOverlayLabel(formatted)
                         executeSmartSeek(targetPos, forceImmediate = false)
                     } else if (gestureMode == 2) {
-                        val deltaRatio = -dy / (height * 0.75f)
+                        val deltaRatio = -dy / (height * 0.72f)
                         if (downX < width / 2f) {
-                            val newBr = (startBrightness + deltaRatio).coerceIn(0.05f, 1.0f)
+                            val newBr = (startBrightness + deltaRatio).coerceIn(0.02f, 1.0f)
                             window.attributes = window.attributes.apply { screenBrightness = newBr }
-                            showCenterOverlayLabel("☀ ${(newBr * 100).toInt()}%")
+                            val pct = (newBr * 100).toInt().coerceIn(0, 100)
+                            showVerticalGestureBar(isBrightness = true, percent = pct)
                         } else if (audioManager != null) {
                             val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
                             val targetVol = (startVolume + (deltaRatio * maxVol).toInt()).coerceIn(0, maxVol)
                             audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetVol, 0)
-                            val pct = ((targetVol * 100) / maxVol)
-                            showCenterOverlayLabel("🔊 $pct%")
+                            val pct = ((targetVol * 100) / maxVol).coerceIn(0, 100)
+                            showVerticalGestureBar(isBrightness = false, percent = pct)
                         }
                     }
                 }
@@ -1040,7 +1540,7 @@ class VideoPlayerActivity : AppCompatActivity() {
                         }
                         hideCenterOverlayLabelDelayed(500L)
                     } else if (gestureMode == 2) {
-                        hideCenterOverlayLabelDelayed(500L)
+                        hideVerticalGestureBarDelayed(500L)
                     }
                     gestureMode = 0
                 }
@@ -1051,6 +1551,32 @@ class VideoPlayerActivity : AppCompatActivity() {
         binding.exoPlayerView.setOnTouchListener(touchHandler)
         binding.platformVideoView.setOnTouchListener(touchHandler)
         binding.playerControlsOverlay.setOnTouchListener(touchHandler)
+    }
+
+    /**
+     * Orijinal APK @id/center_overlay: Dikey Ses / Parlaklık Çubuğunu (`vertical_progress_bar` / `vertical_progress_bar_brightness`) gösterir
+     */
+    private fun showVerticalGestureBar(isBrightness: Boolean, percent: Int) {
+        binding.tvCenterSeekOverlay.visibility = View.GONE
+        binding.verticalProgressBar.progressDrawable = ContextCompat.getDrawable(
+            this,
+            if (isBrightness) R.drawable.vertical_progress_bar_brightness else R.drawable.vertical_progress_bar
+        )
+        binding.verticalProgressBar.progress = percent
+        binding.ivGestureIcon.setImageResource(
+            if (isBrightness) R.drawable.ic_player_brightness_high else R.drawable.ic_vp_volume_on
+        )
+        binding.centerGestureOverlay.visibility = View.VISIBLE
+        uiHandler.removeCallbacksAndMessages("HIDE_GESTURE_BAR")
+    }
+
+    private fun hideVerticalGestureBarDelayed(delayMs: Long) {
+        uiHandler.removeCallbacksAndMessages("HIDE_GESTURE_BAR")
+        uiHandler.postAtTime(
+            { binding.centerGestureOverlay.visibility = View.GONE },
+            "HIDE_GESTURE_BAR",
+            SystemClock.uptimeMillis() + delayMs
+        )
     }
 
     private fun seekByDelta(deltaMs: Long) {
@@ -1073,6 +1599,7 @@ class VideoPlayerActivity : AppCompatActivity() {
     }
 
     private fun showCenterOverlayLabel(text: String) {
+        binding.centerGestureOverlay.visibility = View.GONE
         binding.tvCenterSeekOverlay.text = text
         binding.tvCenterSeekOverlay.visibility = View.VISIBLE
         uiHandler.removeCallbacksAndMessages("HIDE_SEEK_LABEL")

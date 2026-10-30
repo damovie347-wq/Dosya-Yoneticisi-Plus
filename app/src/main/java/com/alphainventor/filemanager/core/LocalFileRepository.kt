@@ -25,6 +25,7 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.security.MessageDigest
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
@@ -108,6 +109,13 @@ data class DrawerHistoryEntry(
     val timestamp: Long
 )
 
+data class ViewerSessionData(
+    val paths: ArrayList<String>,
+    val titles: ArrayList<String>,
+    val initialIndex: Int,
+    val authToken: String = ""
+)
+
 object LocalFileRepository {
 
     private const val PREF_DRAWER_DATA = "FileManagerDrawerPrefs"
@@ -130,6 +138,93 @@ object LocalFileRepository {
 
     @Volatile
     var lastAnalysisReport: StorageAnalysisReport? = null
+
+    // ==================== ORİJİNAL APK Lax/O1/b; & viewer/c-e BELLEK ÖNBELLEĞİ ====================
+    // Medya kategorileri, klasör kutucukları (buckets), yerel klasörler ve görüntüleyici oturumu için
+    // 0 ms anlık erişim sağlayan bellek içi önbellek katmanı.
+    private val categoryFilesCache = ConcurrentHashMap<String, List<FileItem>>()
+    private val categoryBucketsCache = ConcurrentHashMap<String, List<FileItem>>()
+    private val bucketFilesMapCache = ConcurrentHashMap<String, List<FileItem>>()
+    private val directoryListCache = ConcurrentHashMap<String, List<FileItem>>()
+    private val viewerSessionCache = ConcurrentHashMap<String, ViewerSessionData>()
+
+    @Volatile
+    private var cachedQuickStats: QuickDashboardStats? = null
+    @Volatile
+    private var cachedQuickStatsTimeMs: Long = 0L
+
+    fun invalidateCaches() {
+        categoryFilesCache.clear()
+        categoryBucketsCache.clear()
+        bucketFilesMapCache.clear()
+        directoryListCache.clear()
+        cachedQuickStats = null
+    }
+
+    fun putViewerSession(
+        paths: ArrayList<String>,
+        titles: ArrayList<String>,
+        initialIndex: Int,
+        authToken: String = ""
+    ): String {
+        val key = "vs_${System.currentTimeMillis()}"
+        if (viewerSessionCache.size > 12) {
+            viewerSessionCache.clear()
+        }
+        viewerSessionCache[key] = ViewerSessionData(paths, titles, initialIndex, authToken)
+        return key
+    }
+
+    fun getViewerSession(key: String?): ViewerSessionData? {
+        if (key.isNullOrBlank()) return null
+        return viewerSessionCache[key]
+    }
+
+    /**
+     * FileExplorerActivity.loadCurrentDirectory içinde UI thread'den çağrılarak
+     * önbellekteki klasör veya kategori içeriğini 0 ms'de (loading spinner göstermeden) döndürür.
+     */
+    fun getCachedExplorerItems(
+        mode: String,
+        currentPath: String,
+        categoryName: String,
+        selectedBucketPath: String
+    ): List<FileItem>? {
+        val showHidden = AppSettings.showHiddenFiles
+        val sortBy = AppSettings.sortBy
+        val sortAsc = AppSettings.sortAscending
+        return when (mode) {
+            "LOCAL" -> {
+                val raw = directoryListCache["$currentPath|$showHidden"] ?: return null
+                sortFileItems(raw, sortBy, sortAsc)
+            }
+            "CATEGORY" -> {
+                if (categoryName in setOf("VIDEOS", "IMAGES", "AUDIO", "DOCUMENTS")) {
+                    if (selectedBucketPath.isEmpty()) {
+                        val rawBuckets = categoryBucketsCache["$categoryName|$showHidden"] ?: return null
+                        sortBucketsList(rawBuckets, sortBy, sortAsc)
+                    } else {
+                        val rawBucketFiles = bucketFilesMapCache["$categoryName|$showHidden|$selectedBucketPath"] ?: return null
+                        sortFileItems(rawBucketFiles, sortBy, sortAsc)
+                    }
+                } else {
+                    val rawCat = categoryFilesCache["$categoryName|$showHidden"] ?: return null
+                    sortFileItems(rawCat, sortBy, sortAsc)
+                }
+            }
+            else -> null
+        }
+    }
+
+    private fun sortBucketsList(buckets: List<FileItem>, sortBy: Int, asc: Boolean): List<FileItem> {
+        return when (sortBy) {
+            0 -> if (asc) buckets.sortedBy { it.name.lowercase(Locale("tr", "TR")) } else buckets.sortedByDescending { it.name.lowercase(Locale("tr", "TR")) }
+            1 -> if (asc) buckets.sortedBy { it.childCount } else buckets.sortedByDescending { it.childCount }
+            2, 5 -> if (asc) buckets.sortedBy { it.lastModified } else buckets.sortedByDescending { it.lastModified }
+            4 -> buckets
+            else -> buckets.sortedWith(compareByDescending<FileItem> { it.childCount }.thenByDescending { it.lastModified })
+        }
+    }
 
     fun getStorageOverviewForPath(path: String): StorageOverview {
         return try {
@@ -238,23 +333,32 @@ object LocalFileRepository {
     }
 
     suspend fun getQuickDashboardStats(context: Context): QuickDashboardStats = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        val cached = cachedQuickStats
+        if (cached != null && (now - cachedQuickStatsTimeMs) < 15_000L) {
+            return@withContext cached
+        }
+
         val imgStat = queryMediaStoreStat(context, MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
         val audStat = queryMediaStoreStat(context, MediaStore.Audio.Media.EXTERNAL_CONTENT_URI)
         val vidStat = queryMediaStoreStat(context, MediaStore.Video.Media.EXTERNAL_CONTENT_URI)
         val docStat = queryDocumentsStat(context)
         val newStat = queryNewFilesStat(context)
 
-        if (imgStat.count == 0 && vidStat.count == 0 && audStat.count == 0) {
-            return@withContext scanQuickFallbackStats(context)
+        val result = if (imgStat.count == 0 && vidStat.count == 0 && audStat.count == 0) {
+            scanQuickFallbackStats(context)
+        } else {
+            QuickDashboardStats(
+                images = imgStat,
+                audio = audStat,
+                videos = vidStat,
+                docs = docStat,
+                newFiles = newStat
+            )
         }
-
-        QuickDashboardStats(
-            images = imgStat,
-            audio = audStat,
-            videos = vidStat,
-            docs = docStat,
-            newFiles = newStat
-        )
+        cachedQuickStats = result
+        cachedQuickStatsTimeMs = now
+        result
     }
 
     private fun queryMediaStoreStat(context: Context, uri: Uri): CategoryStat {
@@ -337,7 +441,7 @@ object LocalFileRepository {
                 val sizeCol = cursor.getColumnIndex(MediaStore.Files.FileColumns.SIZE)
                 while (cursor.moveToNext()) {
                     val p = if (dataCol >= 0) cursor.getString(dataCol) ?: "" else ""
-                    if (p.isNotEmpty() && !p.contains("/Android/data") && !File(p).isDirectory) {
+                    if (p.isNotEmpty() && !p.contains("/Android/data") && !p.contains("/.DosyaYoneticisiPlus_RecycleBin")) {
                         count++
                         if (sizeCol >= 0) bytes += cursor.getLong(sizeCol).coerceAtLeast(0L)
                     }
@@ -400,26 +504,40 @@ object LocalFileRepository {
     }
 
     /**
-     * Orijinal APK'daki (Video 1 & Video 2) Videolar / Görüntüler / Ses / Belgeler
-     * klasör gruplama (Folder Bucket) mantığı:
-     * - AppSettings.showHiddenFiles == true olduğunda gizli klasörleri (.aa, .Private, .statuses, .thumbnails, .!%#@$) de tarar!
-     * - AppSettings.sortBy ve AppSettings.sortAscending ayarlarına göre klasör kutucuklarını sıralar.
+     * Orijinal APK'daki (Lcom/alphainventor/filemanager/file/u; & Lax/O1/b;) Videolar / Görüntüler / Ses / Belgeler
+     * klasör gruplama (Folder Bucket) ve 0 ms önbellekleme mantığı:
+     * - Tüm klasör kutucuklarını tek geçişte hesaplar ve her klasörün dosya listesini `bucketFilesMapCache` içine kaydeder.
+     * - Böylece kullanıcı herhangi bir klasör kutucuğuna tıkladığında 0 ms'de (yeniden tarama olmadan) açılır!
      */
-    suspend fun getCategoryFolderBuckets(context: Context, category: String): List<FileItem> = withContext(Dispatchers.IO) {
-        val allCategoryFiles = getCategoryFiles(context, category)
+    suspend fun getCategoryFolderBuckets(
+        context: Context,
+        category: String,
+        forceRefresh: Boolean = false
+    ): List<FileItem> = withContext(Dispatchers.IO) {
+        val showHidden = AppSettings.showHiddenFiles
+        val cacheKey = "$category|$showHidden"
+
+        if (!forceRefresh) {
+            val cachedBuckets = categoryBucketsCache[cacheKey]
+            if (cachedBuckets != null) {
+                return@withContext sortBucketsList(cachedBuckets, AppSettings.sortBy, AppSettings.sortAscending)
+            }
+        }
+
+        val allCategoryFiles = getCategoryFiles(context, category, forceRefresh)
         if (allCategoryFiles.isEmpty()) return@withContext emptyList()
 
         val grouped = LinkedHashMap<String, MutableList<FileItem>>()
         for (file in allCategoryFiles) {
-            val parentPath = File(file.path).parentFile?.absolutePath ?: rootStorageDir.absolutePath
+            val parentPath = file.path.substringBeforeLast('/', rootStorageDir.absolutePath)
             grouped.getOrPut(parentPath) { ArrayList() }.add(file)
         }
 
         val buckets = ArrayList<FileItem>(grouped.size)
         for ((folderPath, files) in grouped) {
             if (files.isEmpty()) continue
-            val folderFile = File(folderPath)
-            val folderName = folderFile.name.ifBlank { "Ana bellek" }
+            bucketFilesMapCache["$category|$showHidden|$folderPath"] = files
+            val folderName = folderPath.substringAfterLast('/').ifBlank { "Ana bellek" }
             val newestMedia = files.maxByOrNull { it.lastModified } ?: files.first()
             val totalSize = files.sumOf { it.size }
             buckets.add(
@@ -438,28 +556,31 @@ object LocalFileRepository {
             )
         }
 
-        val sortBy = AppSettings.sortBy
-        val asc = AppSettings.sortAscending
-        when (sortBy) {
-            0 -> if (asc) buckets.sortedBy { it.name.lowercase(Locale("tr", "TR")) } else buckets.sortedByDescending { it.name.lowercase(Locale("tr", "TR")) }
-            1 -> if (asc) buckets.sortedBy { it.childCount } else buckets.sortedByDescending { it.childCount }
-            2, 5 -> if (asc) buckets.sortedBy { it.lastModified } else buckets.sortedByDescending { it.lastModified }
-            4 -> buckets
-            else -> buckets.sortedWith(compareByDescending<FileItem> { it.childCount }.thenByDescending { it.lastModified })
-        }
+        categoryBucketsCache[cacheKey] = buckets
+        sortBucketsList(buckets, AppSettings.sortBy, AppSettings.sortAscending)
     }
 
     suspend fun getCategoryFilesInBucket(
         context: Context,
         category: String,
-        bucketFolderPath: String
+        bucketFolderPath: String,
+        forceRefresh: Boolean = false
     ): List<FileItem> = withContext(Dispatchers.IO) {
-        val all = getCategoryFiles(context, category)
+        val showHidden = AppSettings.showHiddenFiles
+        val bucketKey = "$category|$showHidden|$bucketFolderPath"
+
+        if (!forceRefresh) {
+            bucketFilesMapCache[bucketKey]?.let { cached ->
+                return@withContext sortFileItems(cached, AppSettings.sortBy, AppSettings.sortAscending)
+            }
+        }
+
+        val all = getCategoryFiles(context, category, forceRefresh)
         val filtered = all.filter { item ->
-            val parent = File(item.path).parentFile?.absolutePath ?: ""
-            parent == bucketFolderPath
+            item.path.substringBeforeLast('/', "") == bucketFolderPath
         }
         if (filtered.isNotEmpty()) {
+            bucketFilesMapCache[bucketKey] = filtered
             return@withContext sortFileItems(filtered, AppSettings.sortBy, AppSettings.sortAscending)
         }
         val dir = File(bucketFolderPath)
@@ -467,7 +588,7 @@ object LocalFileRepository {
         val list = ArrayList<FileItem>()
         for (f in raw) {
             if (f.isDirectory) continue
-            if (!AppSettings.showHiddenFiles && f.name.startsWith(".")) continue
+            if (!showHidden && f.name.startsWith(".")) continue
             val fi = FileItem(
                 id = f.absolutePath,
                 name = f.name,
@@ -486,11 +607,24 @@ object LocalFileRepository {
             }
             if (match) list.add(fi)
         }
+        bucketFilesMapCache[bucketKey] = list
         sortFileItems(list, AppSettings.sortBy, AppSettings.sortAscending)
     }
 
-    suspend fun getCategoryFiles(context: Context? = null, category: String): List<FileItem> = withContext(Dispatchers.IO) {
+    suspend fun getCategoryFiles(
+        context: Context? = null,
+        category: String,
+        forceRefresh: Boolean = false
+    ): List<FileItem> = withContext(Dispatchers.IO) {
         val showHidden = AppSettings.showHiddenFiles
+        val cacheKey = "$category|$showHidden"
+
+        if (!forceRefresh) {
+            categoryFilesCache[cacheKey]?.let { cached ->
+                return@withContext sortFileItems(cached, AppSettings.sortBy, AppSettings.sortAscending)
+            }
+        }
+
         val merged = LinkedHashMap<String, FileItem>()
 
         if (context != null) {
@@ -511,7 +645,9 @@ object LocalFileRepository {
             }
         }
 
-        sortFileItems(merged.values.toList(), AppSettings.sortBy, AppSettings.sortAscending)
+        val rawList = merged.values.toList()
+        categoryFilesCache[cacheKey] = rawList
+        sortFileItems(rawList, AppSettings.sortBy, AppSettings.sortAscending)
     }
 
     private fun queryMediaStoreCategoryItems(context: Context, category: String): List<FileItem> {
@@ -544,13 +680,19 @@ object LocalFileRepository {
                             val path = if (dataCol >= 0) cursor.getString(dataCol) ?: "" else ""
                             if (path.isBlank() || path.contains("/.DosyaYoneticisiPlus_RecycleBin")) continue
                             if (!showHidden && isHiddenPath(path)) continue
-                            val file = File(path)
-                            if (!file.exists()) continue
-                            val name = if (nameCol >= 0) cursor.getString(nameCol) ?: file.name else file.name
-                            val size = if (sizeCol >= 0) cursor.getLong(sizeCol).coerceAtLeast(file.length()) else file.length()
+
+                            // Orijinal APK optimizasyonu: MediaStore'dan gelen SIZE ve DATE_MODIFIED > 0 ise
+                            // her satır için bloklayıcı JNI File.length() / File.lastModified() çağrısı yapma!
+                            val rawSize = if (sizeCol >= 0) cursor.getLong(sizeCol) else 0L
                             val modSec = if (dateCol >= 0) cursor.getLong(dateCol) else 0L
-                            val lastMod = if (modSec > 0L) modSec * 1000L else file.lastModified()
+                            val name = (if (nameCol >= 0) cursor.getString(nameCol) else null)
+                                ?.takeIf { it.isNotBlank() }
+                                ?: path.substringAfterLast('/')
+                            val size = if (rawSize > 0L) rawSize else File(path).length()
+                            if (size <= 0L && !File(path).exists()) continue
+                            val lastMod = if (modSec > 0L) modSec * 1000L else File(path).lastModified()
                             val mime = if (mimeCol >= 0) cursor.getString(mimeCol) ?: "" else ""
+                            val parentName = path.substringBeforeLast('/', "").substringAfterLast('/').ifBlank { "Ana bellek" }
 
                             list.add(
                                 FileItem(
@@ -562,7 +704,7 @@ object LocalFileRepository {
                                     lastModified = lastMod,
                                     mimeType = mime,
                                     sourceType = FileSourceType.LOCAL,
-                                    parentId = file.parentFile?.name ?: "Ana bellek"
+                                    parentId = parentName
                                 )
                             )
                         }
@@ -587,23 +729,24 @@ object LocalFileRepository {
                                     else -> false
                                 }
                                 if (!matchesCat) continue
-                                val file = File(path)
-                                if (!file.exists() || file.isDirectory) continue
-                                val size = if (sizeCol >= 0) cursor.getLong(sizeCol).coerceAtLeast(file.length()) else file.length()
+                                val rawSize = if (sizeCol >= 0) cursor.getLong(sizeCol) else 0L
                                 val modSec = if (dateCol >= 0) cursor.getLong(dateCol) else 0L
-                                val lastMod = if (modSec > 0L) modSec * 1000L else file.lastModified()
+                                val size = if (rawSize > 0L) rawSize else File(path).length()
+                                if (size <= 0L) continue
+                                val lastMod = if (modSec > 0L) modSec * 1000L else File(path).lastModified()
                                 val mime = if (mimeCol >= 0) cursor.getString(mimeCol) ?: "" else ""
+                                val parentName = path.substringBeforeLast('/', "").substringAfterLast('/').ifBlank { "Ana bellek" }
                                 list.add(
                                     FileItem(
                                         id = path,
-                                        name = file.name,
+                                        name = path.substringAfterLast('/'),
                                         path = path,
                                         isDirectory = false,
                                         size = size,
                                         lastModified = lastMod,
                                         mimeType = mime,
                                         sourceType = FileSourceType.LOCAL,
-                                        parentId = file.parentFile?.name ?: "Ana bellek"
+                                        parentId = parentName
                                     )
                                 )
                             }
@@ -631,24 +774,25 @@ object LocalFileRepository {
                             if (!showHidden && isHiddenPath(path)) continue
                             val ext = path.substringAfterLast('.', "").lowercase()
                             if (ext !in FileItem.DOC_EXTENSIONS) continue
-                            val file = File(path)
-                            if (!file.exists() || file.isDirectory) continue
-                            val size = if (sizeCol >= 0) cursor.getLong(sizeCol).coerceAtLeast(file.length()) else file.length()
+                            val rawSize = if (sizeCol >= 0) cursor.getLong(sizeCol) else 0L
                             val modSec = if (dateCol >= 0) cursor.getLong(dateCol) else 0L
-                            val lastMod = if (modSec > 0L) modSec * 1000L else file.lastModified()
+                            val size = if (rawSize > 0L) rawSize else File(path).length()
+                            if (size <= 0L) continue
+                            val lastMod = if (modSec > 0L) modSec * 1000L else File(path).lastModified()
                             val mime = if (mimeCol >= 0) cursor.getString(mimeCol) ?: "" else ""
+                            val parentName = path.substringBeforeLast('/', "").substringAfterLast('/').ifBlank { "Ana bellek" }
 
                             list.add(
                                 FileItem(
                                     id = path,
-                                    name = file.name,
+                                    name = path.substringAfterLast('/'),
                                     path = path,
                                     isDirectory = false,
                                     size = size,
                                     lastModified = lastMod,
                                     mimeType = mime,
                                     sourceType = FileSourceType.LOCAL,
-                                    parentId = file.parentFile?.name ?: "Ana bellek"
+                                    parentId = parentName
                                 )
                             )
                         }
@@ -676,24 +820,25 @@ object LocalFileRepository {
                             val path = if (dataCol >= 0) cursor.getString(dataCol) ?: "" else ""
                             if (path.isBlank() || path.contains("/Android/data") || path.contains("/Android/obb") || path.contains("/.DosyaYoneticisiPlus_RecycleBin")) continue
                             if (!showHidden && isHiddenPath(path)) continue
-                            val file = File(path)
-                            if (!file.exists() || file.isDirectory) continue
-                            val size = if (sizeCol >= 0) cursor.getLong(sizeCol).coerceAtLeast(file.length()) else file.length()
+                            val rawSize = if (sizeCol >= 0) cursor.getLong(sizeCol) else 0L
                             val modSec = if (dateCol >= 0) cursor.getLong(dateCol) else 0L
-                            val lastMod = if (modSec > 0L) modSec * 1000L else file.lastModified()
+                            val size = if (rawSize > 0L) rawSize else File(path).length()
+                            if (size <= 0L) continue
+                            val lastMod = if (modSec > 0L) modSec * 1000L else File(path).lastModified()
                             val mime = if (mimeCol >= 0) cursor.getString(mimeCol) ?: "" else ""
+                            val parentName = path.substringBeforeLast('/', "").substringAfterLast('/').ifBlank { "Ana bellek" }
 
                             list.add(
                                 FileItem(
                                     id = path,
-                                    name = file.name,
+                                    name = path.substringAfterLast('/'),
                                     path = path,
                                     isDirectory = false,
                                     size = size,
                                     lastModified = lastMod,
                                     mimeType = mime,
                                     sourceType = FileSourceType.LOCAL,
-                                    parentId = file.parentFile?.name ?: "Ana bellek",
+                                    parentId = parentName,
                                     sectionHeader = FormatUtils.formatSectionDate(lastMod)
                                 )
                             )
@@ -709,8 +854,16 @@ object LocalFileRepository {
     suspend fun listDirectory(
         dir: File,
         showHidden: Boolean = AppSettings.showHiddenFiles,
-        sortBy: Int = AppSettings.sortBy
+        sortBy: Int = AppSettings.sortBy,
+        forceRefresh: Boolean = false
     ): List<FileItem> = withContext(Dispatchers.IO) {
+        val cacheKey = "${dir.absolutePath}|$showHidden"
+        if (!forceRefresh) {
+            directoryListCache[cacheKey]?.let { cached ->
+                return@withContext sortFileItems(cached, sortBy, AppSettings.sortAscending)
+            }
+        }
+
         val rawFiles = dir.listFiles() ?: return@withContext emptyList()
         val items = ArrayList<FileItem>(rawFiles.size)
         for (f in rawFiles) {
@@ -733,6 +886,7 @@ object LocalFileRepository {
                 )
             )
         }
+        directoryListCache[cacheKey] = items
         sortFileItems(items, sortBy, AppSettings.sortAscending)
     }
 
@@ -1285,7 +1439,9 @@ object LocalFileRepository {
 
     fun createNewFolder(parentDir: File, name: String): Boolean {
         return try {
-            File(parentDir, name).mkdirs()
+            val ok = File(parentDir, name).mkdirs()
+            if (ok) invalidateCaches()
+            ok
         } catch (_: Throwable) {
             false
         }
@@ -1293,7 +1449,9 @@ object LocalFileRepository {
 
     fun createNewFile(parentDir: File, name: String): Boolean {
         return try {
-            File(parentDir, name).createNewFile()
+            val ok = File(parentDir, name).createNewFile()
+            if (ok) invalidateCaches()
+            ok
         } catch (_: Throwable) {
             false
         }
@@ -1303,15 +1461,18 @@ object LocalFileRepository {
         return try {
             val dest = File(file.parentFile ?: rootStorageDir, newName)
             val ok = file.renameTo(dest)
-            if (ok && context != null) {
-                try {
-                    MediaScannerConnection.scanFile(
-                        context.applicationContext,
-                        arrayOf(file.absolutePath, dest.absolutePath),
-                        null,
-                        null
-                    )
-                } catch (_: Throwable) {
+            if (ok) {
+                invalidateCaches()
+                if (context != null) {
+                    try {
+                        MediaScannerConnection.scanFile(
+                            context.applicationContext,
+                            arrayOf(file.absolutePath, dest.absolutePath),
+                            null,
+                            null
+                        )
+                    } catch (_: Throwable) {
+                    }
                 }
             }
             ok
@@ -1331,6 +1492,7 @@ object LocalFileRepository {
             }
         }
         clipboardFiles = emptyList()
+        if (count > 0) invalidateCaches()
         count
     }
 
@@ -1348,6 +1510,7 @@ object LocalFileRepository {
                 deletedPaths.add(f.absolutePath)
             }
         }
+        if (count > 0) invalidateCaches()
         if (context != null && deletedPaths.isNotEmpty()) {
             try {
                 MediaScannerConnection.scanFile(
@@ -1366,7 +1529,10 @@ object LocalFileRepository {
         try {
             if (!destDir.exists()) destDir.mkdirs()
             val target = File(destDir, src.name)
-            if (move && src.renameTo(target)) return@withContext true
+            if (move && src.renameTo(target)) {
+                invalidateCaches()
+                return@withContext true
+            }
             if (src.isDirectory) {
                 src.copyRecursively(target, overwrite = true)
                 if (move) src.deleteRecursively()
@@ -1374,6 +1540,7 @@ object LocalFileRepository {
                 src.copyTo(target, overwrite = true)
                 if (move) src.delete()
             }
+            invalidateCaches()
             true
         } catch (_: Throwable) {
             false
@@ -1385,9 +1552,14 @@ object LocalFileRepository {
             try {
                 if (useRecycleBin && !file.absolutePath.startsWith(recycleBinDir.absolutePath)) {
                     val dest = File(recycleBinDir, "${System.currentTimeMillis()}_${file.name}")
-                    if (file.renameTo(dest)) return@withContext true
+                    if (file.renameTo(dest)) {
+                        invalidateCaches()
+                        return@withContext true
+                    }
                 }
-                if (file.isDirectory) file.deleteRecursively() else file.delete()
+                val ok = if (file.isDirectory) file.deleteRecursively() else file.delete()
+                if (ok) invalidateCaches()
+                ok
             } catch (_: Throwable) {
                 false
             }
@@ -1410,6 +1582,7 @@ object LocalFileRepository {
                     }
                 }
             }
+            invalidateCaches()
             true
         } catch (_: Throwable) {
             false
@@ -1439,6 +1612,7 @@ object LocalFileRepository {
                     entry = zis.nextEntry
                 }
             }
+            invalidateCaches()
             true
         } catch (_: Throwable) {
             false

@@ -7,7 +7,6 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Bundle
 import android.text.Editable
-import android.text.TextUtils
 import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
@@ -18,6 +17,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.PopupWindow
+import android.widget.ProgressBar
 import java.text.NumberFormat
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -62,9 +62,8 @@ import java.util.Stack
 /**
  * Orijinal Dosya Yöneticisi + 3.6.7 Dosya, Medya Kategorileri ve Bulut Gezgini:
  * - Videolar, Görüntüler, Ses ve Belgeler kategorilerinde önce 1:1 Kare Klasör Kutucukları (Screen recordings (8), Movies (6) vb.) gösterilir, klasöre tıklanınca o klasördeki medya dosyaları açılır.
- * - Üst sağdaki Görünüm/Sıralama (⇵) butonuna tıklandığında orijinal alt panel (location_settings.xml: Tüm klasörlere uygula, Görünüm radyo butonları, Sırala: Tarih ▼ -> Sıralama ölçütü diyaloğu, Diğerleri: Gizli dosyaları göster) açılır.
- * - Yeniden adlandırma penceresinde (dialog_filename_input.xml) dosya uzantısı (.mp4, .mkv, .jpg) sağda sabit kalır, sadece dosya adı düzenlenir.
- * - Silme penceresinde (dialog_delete.xml) Geri Dönüşüm Kutusu ve "Kalıcı olarak sil" onay kutusu yer alır.
+ * - Orijinal APK'daki Lax/O1/b; ve viewer/c-e önbellek mimarisiyle klasör ve kategori geçişleri 0 ms'de (loading spinner çıkmadan) gerçekleşir.
+ * - MEGA bulut dosyalarına tıklandığında AES-CTR ile çözülerek yerel önbelleğe indirilir ve dahili oynatıcıda açılır.
  */
 class FileExplorerActivity : AppCompatActivity() {
 
@@ -310,7 +309,7 @@ class FileExplorerActivity : AppCompatActivity() {
         updateRecyclerLayoutManager()
         binding.rvFileList.adapter = adapter
         binding.rvFileList.setHasFixedSize(true)
-        binding.rvFileList.setItemViewCacheSize(24)
+        binding.rvFileList.setItemViewCacheSize(28)
 
         binding.swipeRefreshFiles.setColorSchemeColors(ContextCompat.getColor(this, R.color.accent_teal))
         binding.swipeRefreshFiles.setOnRefreshListener {
@@ -376,7 +375,7 @@ class FileExplorerActivity : AppCompatActivity() {
             }
         })
 
-        // Orijinal Alt Görünüm / Sıralama / Gizli Dosya Paneli (Söylediğim dosya ayarındaki çıkan panel bu şekilde İstediğim bu.jpg)
+        // Orijinal Alt Görünüm / Sıralama / Gizli Dosya Paneli
         binding.btnSortAndView.setOnClickListener {
             showOriginalViewSortBottomSheet()
         }
@@ -483,8 +482,7 @@ class FileExplorerActivity : AppCompatActivity() {
     }
 
     /**
-     * Orijinal APK'daki (res/xml/location_settings.xml & Söylediğim dosya ayarındaki çıkan panel bu şekilde İstediğim bu.jpg)
-     * Alt Görünüm / Sıralama / Gizli Dosya Paneli:
+     * Orijinal APK'daki (res/xml/location_settings.xml) Alt Görünüm / Sıralama / Gizli Dosya Paneli:
      * 1) Tüm klasörlere uygula [ ]
      * 2) Görünüm:
      *    - [ ◯ Liste (v_shape_listview) ]   [ 🔘 Izgara (v_shape_gridview) ]   [ ◯ Detaylı (v_shape_detailview) ]
@@ -492,7 +490,7 @@ class FileExplorerActivity : AppCompatActivity() {
      * 3) Sırala:
      *    - Tarih ▼ (Tıklanınca "Sıralama ölçütü" radyo butonlu diyaloğu açılır)
      * 4) Diğerleri:
-     *    - Gizli dosyaları göster [ ] (İşaretlendiği anda .aa, .Private, .statuses gibi gizli medya klasörlerini de açar!)
+     *    - Gizli dosyaları göster [ ]
      */
     private fun showOriginalViewSortBottomSheet() {
         val sheet = BottomSheetDialog(this)
@@ -767,15 +765,6 @@ class FileExplorerActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Video 2'deki (00:14 ve 00:39) Orijinal "Sıralama ölçütü" Radyo Diyaloğu:
-     * - Sıralama yok
-     * - Ad ▲ / Ad ▼
-     * - Boyut ▲ / Boyut ▼
-     * - Tarih ▲ / Tarih ▼
-     * - (Görüntüler kategorisinde: Çekim Tarihi ▲ / Çekim Tarihi ▼)
-     * - Tür ▲ / Tür ▼
-     */
     private fun showOriginalSortCriteriaDialog(onSortSelected: () -> Unit) {
         data class SortOption(val label: String, val sortBy: Int, val asc: Boolean)
 
@@ -841,12 +830,46 @@ class FileExplorerActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Orijinal APK'daki Lax/O1/b; (FileListCache) sıfır bekleme mantığı:
+     * - forceRefresh == false iken önbellekte (LocalFileRepository veya CloudManager) geçerli liste varsa
+     *   pbLoadingFiles halkasını HİÇ göstermeden 0 ms içinde doğrudan UI thread üzerinde listeyi günceller!
+     */
     private fun loadCurrentDirectory(forceRefresh: Boolean = false) {
         loadDirectoryJob?.cancel()
         applySavedViewModeForCurrentLocation()
+        renderBreadcrumbs()
+
+        if (!forceRefresh) {
+            val instantCached: List<FileItem>? = when (mode) {
+                "CLOUD" -> {
+                    val acc = cloudAccount
+                    val expectedFolderId = if (cloudNavStack.isEmpty()) "root" else cloudNavStack.peek().id
+                    if (acc != null) CloudManager.getCachedCloudFolder(acc.id, expectedFolderId) else null
+                }
+                "LOCAL", "CATEGORY" -> {
+                    if (mode == "LOCAL") updateLocalStorageUsedPill()
+                    LocalFileRepository.getCachedExplorerItems(mode, currentPath, categoryName, selectedBucketPath)
+                }
+                else -> null
+            }
+
+            if (instantCached != null) {
+                fullCurrentItems = instantCached
+                adapter.submitList(instantCached)
+                binding.pbLoadingFiles.visibility = View.GONE
+                binding.swipeRefreshFiles.isRefreshing = false
+                binding.llEmptyFolder.visibility = if (instantCached.isEmpty()) View.VISIBLE else View.GONE
+                if (instantCached.isEmpty()) {
+                    binding.tvEmptyFolder.text = getString(R.string.empty_folder)
+                }
+                updateSelectionUi()
+                return
+            }
+        }
+
         binding.pbLoadingFiles.visibility = View.VISIBLE
         binding.llEmptyFolder.visibility = View.GONE
-        renderBreadcrumbs()
 
         loadDirectoryJob = lifecycleScope.launch {
             val list = when (mode) {
@@ -867,7 +890,7 @@ class FileExplorerActivity : AppCompatActivity() {
                     if (refreshedAcc != null) {
                         cloudAccount = refreshedAcc
                     }
-                    if (expectedFolderId == "root" && files.isNotEmpty()) {
+                    if (expectedFolderId == "root" && files.isNotEmpty() && acc.provider == CloudProviderType.GOOGLE_DRIVE) {
                         launch {
                             val updatedAcc = CloudManager.fetchGoogleDriveQuota(this@FileExplorerActivity, cloudAccount ?: acc)
                             cloudAccount = updatedAcc
@@ -883,21 +906,22 @@ class FileExplorerActivity : AppCompatActivity() {
                 "CATEGORY" -> {
                     if (categoryName in setOf("VIDEOS", "IMAGES", "AUDIO", "DOCUMENTS")) {
                         if (selectedBucketPath.isEmpty()) {
-                            LocalFileRepository.getCategoryFolderBuckets(this@FileExplorerActivity, categoryName)
+                            LocalFileRepository.getCategoryFolderBuckets(this@FileExplorerActivity, categoryName, forceRefresh)
                         } else {
                             LocalFileRepository.getCategoryFilesInBucket(
                                 this@FileExplorerActivity,
                                 categoryName,
-                                selectedBucketPath
+                                selectedBucketPath,
+                                forceRefresh
                             )
                         }
                     } else {
-                        LocalFileRepository.getCategoryFiles(this@FileExplorerActivity, categoryName)
+                        LocalFileRepository.getCategoryFiles(this@FileExplorerActivity, categoryName, forceRefresh)
                     }
                 }
                 else -> {
                     updateLocalStorageUsedPill()
-                    LocalFileRepository.listDirectory(File(currentPath))
+                    LocalFileRepository.listDirectory(File(currentPath), forceRefresh = forceRefresh)
                 }
             }
 
@@ -920,11 +944,6 @@ class FileExplorerActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Orijinal APK Breadcrumb Çubuğu (Video 1 00:05-00:11 & Video 4 00:34-00:36):
-     * - Kategori kökündeyken: sadece 🏠 > [🎬] görünür (yazı tekrarı olmaz).
-     * - Kategori içinde bir klasöre (örn. Movies) girildiğinde: 🏠 > [🎬] > Movies görünür!
-     */
     private fun renderBreadcrumbs() {
         binding.llBreadcrumbContainer.removeAllViews()
         val crumbs: List<Pair<String, () -> Unit>> = when (mode) {
@@ -978,7 +997,7 @@ class FileExplorerActivity : AppCompatActivity() {
                         list.add(segment to {
                             if (currentPath != target) {
                                 currentPath = target
-                                loadCurrentDirectory()
+                                loadCurrentDirectory(forceRefresh = false)
                             }
                         })
                     }
@@ -1029,7 +1048,7 @@ class FileExplorerActivity : AppCompatActivity() {
                 else -> {
                     currentPath = item.path
                     LocalFileRepository.recordHistory(this, item, localVolumeTitle)
-                    loadCurrentDirectory()
+                    loadCurrentDirectory(forceRefresh = false)
                 }
             }
             return
@@ -1043,11 +1062,18 @@ class FileExplorerActivity : AppCompatActivity() {
             LocalFileRepository.recordHistory(this, item, section)
         }
 
+        // MEGA bulut dosyaları AES-CTR ile şifreli olduğu için önce yerel önbelleğe çözerek aç
+        val acc = cloudAccount
+        if (item.sourceType == FileSourceType.CLOUD && acc != null && acc.provider == CloudProviderType.MEGA) {
+            openMegaCloudFile(acc, item)
+            return
+        }
+
         lifecycleScope.launch {
-            val activeToken = if (item.sourceType == FileSourceType.CLOUD && cloudAccount != null) {
-                CloudManager.resolveGoogleDriveToken(this@FileExplorerActivity, cloudAccount!!, forceRefresh = false)
+            val activeToken = if (item.sourceType == FileSourceType.CLOUD && acc != null && acc.provider == CloudProviderType.GOOGLE_DRIVE) {
+                CloudManager.resolveGoogleDriveToken(this@FileExplorerActivity, acc, forceRefresh = false)
             } else {
-                cloudAccount?.accessToken ?: ""
+                acc?.accessToken ?: ""
             }
 
             when {
@@ -1057,13 +1083,17 @@ class FileExplorerActivity : AppCompatActivity() {
                         val siblingPaths = ArrayList(siblingVideos.map { if (it.sourceType == FileSourceType.CLOUD) it.downloadUrl else it.path })
                         val siblingTitles = ArrayList(siblingVideos.map { it.name })
                         val curIdx = siblingVideos.indexOfFirst { it.id == item.id }.coerceAtLeast(0)
+                        val sessionKey = LocalFileRepository.putViewerSession(siblingPaths, siblingTitles, curIdx, activeToken)
 
                         startActivity(Intent(this@FileExplorerActivity, VideoPlayerActivity::class.java).apply {
                             putExtra("VIDEO_URL", if (item.sourceType == FileSourceType.CLOUD) item.downloadUrl else item.path)
                             putExtra("VIDEO_TITLE", item.name)
                             putExtra("AUTH_TOKEN", activeToken)
-                            putStringArrayListExtra("PLAYLIST_URLS", siblingPaths)
-                            putStringArrayListExtra("PLAYLIST_TITLES", siblingTitles)
+                            putExtra("VIEWER_SESSION_KEY", sessionKey)
+                            if (siblingPaths.size <= 300) {
+                                putStringArrayListExtra("PLAYLIST_URLS", siblingPaths)
+                                putStringArrayListExtra("PLAYLIST_TITLES", siblingTitles)
+                            }
                             putExtra("PLAYLIST_INDEX", curIdx)
                         })
                     } else {
@@ -1087,13 +1117,17 @@ class FileExplorerActivity : AppCompatActivity() {
                         val siblingPaths = ArrayList(siblingImages.map { if (it.sourceType == FileSourceType.CLOUD) it.downloadUrl else it.path })
                         val siblingTitles = ArrayList(siblingImages.map { it.name })
                         val curIdx = siblingImages.indexOfFirst { it.id == item.id }.coerceAtLeast(0)
+                        val sessionKey = LocalFileRepository.putViewerSession(siblingPaths, siblingTitles, curIdx, activeToken)
 
                         startActivity(Intent(this@FileExplorerActivity, ImageViewerActivity::class.java).apply {
                             putExtra("IMAGE_PATH", if (item.sourceType == FileSourceType.CLOUD) item.downloadUrl else item.path)
                             putExtra("IMAGE_TITLE", item.name)
                             putExtra("AUTH_TOKEN", activeToken)
-                            putStringArrayListExtra("IMAGE_LIST_PATHS", siblingPaths)
-                            putStringArrayListExtra("IMAGE_LIST_TITLES", siblingTitles)
+                            putExtra("VIEWER_SESSION_KEY", sessionKey)
+                            if (siblingPaths.size <= 300) {
+                                putStringArrayListExtra("IMAGE_LIST_PATHS", siblingPaths)
+                                putStringArrayListExtra("IMAGE_LIST_TITLES", siblingTitles)
+                            }
                             putExtra("IMAGE_INDEX", curIdx)
                         })
                     } else {
@@ -1111,6 +1145,68 @@ class FileExplorerActivity : AppCompatActivity() {
                 }
                 else -> {
                     LocalFileRepository.openWithExternalChooser(this@FileExplorerActivity, item, activeToken)
+                }
+            }
+        }
+    }
+
+    private fun openMegaCloudFile(account: CloudAccount, item: FileItem) {
+        val density = resources.displayMetrics.density
+        val progressLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            val pad = (20 * density).toInt()
+            setPadding(pad, pad, pad, pad)
+            addView(ProgressBar(this@FileExplorerActivity))
+            addView(TextView(this@FileExplorerActivity).apply {
+                text = "MEGA dosyası hazırlanıyor: ${item.name}"
+                textSize = 14.5f
+                setPadding((16 * density).toInt(), 0, 0, 0)
+            })
+        }
+        val loadingDialog = AlertDialog.Builder(this)
+            .setView(progressLayout)
+            .setCancelable(false)
+            .create()
+        loadingDialog.show()
+
+        lifecycleScope.launch {
+            val localFile = CloudManager.downloadMegaFileToCache(this@FileExplorerActivity, account, item)
+            loadingDialog.dismiss()
+            if (localFile == null || !localFile.exists()) {
+                Toast.makeText(
+                    this@FileExplorerActivity,
+                    CloudManager.lastCloudErrorMessage ?: "MEGA dosyası indirilemedi.",
+                    Toast.LENGTH_LONG
+                ).show()
+                return@launch
+            }
+            val localItem = item.copy(
+                path = localFile.absolutePath,
+                downloadUrl = localFile.absolutePath,
+                sourceType = FileSourceType.LOCAL
+            )
+            when {
+                localItem.isVideo && AppSettings.useInternalVideoPlayer -> {
+                    startActivity(Intent(this@FileExplorerActivity, VideoPlayerActivity::class.java).apply {
+                        putExtra("VIDEO_URL", localFile.absolutePath)
+                        putExtra("VIDEO_TITLE", localItem.name)
+                    })
+                }
+                localItem.isAudio && AppSettings.useInternalMusicPlayer -> {
+                    startActivity(Intent(this@FileExplorerActivity, MusicPlayerActivity::class.java).apply {
+                        putExtra("AUDIO_URL", localFile.absolutePath)
+                        putExtra("AUDIO_TITLE", localItem.name)
+                    })
+                }
+                localItem.isImage && AppSettings.useInternalImageViewer -> {
+                    startActivity(Intent(this@FileExplorerActivity, ImageViewerActivity::class.java).apply {
+                        putExtra("IMAGE_PATH", localFile.absolutePath)
+                        putExtra("IMAGE_TITLE", localItem.name)
+                    })
+                }
+                else -> {
+                    LocalFileRepository.openWithExternalChooser(this@FileExplorerActivity, localItem)
                 }
             }
         }
@@ -1143,11 +1239,6 @@ class FileExplorerActivity : AppCompatActivity() {
             .show()
     }
 
-    /**
-     * Orijinal APK Yeniden Adlandırma Diyaloğu (res/layout/dialog_filename_input.xml):
-     * - Dosya yeniden adlandırılırken uzantı (.mp4, .mkv, .jpg vb.) sağda sabit bir TextView olarak durur!
-     * - Soldaki EditText içinde sadece dosyanın uzantısız adı yer alır, böylece kullanıcı .mp4 uzantısını bozmadan sadece ismi değiştirir!
-     */
     private fun showRenameDialog(item: FileItem) {
         val density = resources.displayMetrics.density
         val primaryColor = ThemeManager.getPrimaryTextColor(this)
@@ -1206,12 +1297,6 @@ class FileExplorerActivity : AppCompatActivity() {
             .show()
     }
 
-    /**
-     * Orijinal APK Silme Diyaloğu (res/layout/dialog_delete.xml):
-     * - Dosya/klasör adı ve boyutunu gösterir.
-     * - Geri Dönüşüm Kutusu etkinse altta "Kalıcı olarak sil" onay kutusu sunar:
-     *   işaretlenmezse Geri Dönüşüm Kutusuna taşır, işaretlenirse kalıcı olarak siler!
-     */
     private fun showDeleteConfirmDialog(items: List<FileItem>) {
         val density = resources.displayMetrics.density
         val primaryColor = ThemeManager.getPrimaryTextColor(this)
@@ -1329,16 +1414,6 @@ class FileExplorerActivity : AppCompatActivity() {
             .show()
     }
 
-    /**
-     * Orijinal APK Sağ Alt "Daha fazla" İkonlu İşlem Paneli (Video 5 00:04 - 00:12):
-     * - Paylaş
-     * - Yer İmi Ekle
-     * - Çıkart (ZIP seçiliyse doğrudan 3 seçenekli orijinal çıkartma diyaloğunu açar!)
-     * - Sıkıştır (Normal dosya/klasör seçiliyse)
-     * - Şununla aç
-     * - Özellikler (MD5/SHA-1 HESAPLAMAK butonlu orijinal özellikler penceresi)
-     * - Ayarlar
-     */
     private fun showOriginalBottomMorePopup(anchor: View, selected: List<FileItem>) {
         val first = selected.first()
         val density = resources.displayMetrics.density
@@ -1459,13 +1534,6 @@ class FileExplorerActivity : AppCompatActivity() {
         popupWindow.showAtLocation(binding.explorerRoot, Gravity.NO_GRAVITY, xPos, yPos)
     }
 
-    /**
-     * Orijinal APK ZIP Çıkartma Diyaloğu (Video 5 00:13 - 00:14):
-     * Başlık: Dosya-Yoneticisi-Plus-v3.6.7-APK.zip
-     * 1) Buraya Çıkart
-     * 2) Klasöre çıkart Dosya-Yoneticisi-Plus-v3.6.7-APK/
-     * 3) Dosyaları çıkart... (Hedef klasör seçme çubuğunu açar)
-     */
     private fun showOriginalZipExtractDialog(item: FileItem) {
         val baseFolderName = item.name.substringBeforeLast('.').ifBlank { "${item.name}_cikartilan" }
         val parentDir = File(item.path).parentFile ?: File(currentPath)
@@ -1528,11 +1596,6 @@ class FileExplorerActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Orijinal APK Özellikler Diyaloğu (Video 5 00:05):
-     * - Türü, Boyut (detaylı bayt ile), Değiştirilmiş, Yol, İzinler
-     * - Sağlama toplamları: [ HESAPLAMAK ] butonu (MD5 & SHA-1 hesaplar)
-     */
     private fun showPropertiesDialog(item: FileItem) {
         val density = resources.displayMetrics.density
         val primaryColor = ThemeManager.getPrimaryTextColor(this)
@@ -1547,7 +1610,6 @@ class FileExplorerActivity : AppCompatActivity() {
             setBackgroundColor(cardColor)
         }
 
-        // Başlık Satırı (Dosya İkonu + Dosya Adı)
         val titleRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -1736,7 +1798,7 @@ class FileExplorerActivity : AppCompatActivity() {
                     val parent = File(currentPath).parentFile
                     if (parent != null && parent.absolutePath.startsWith(rootPath)) {
                         currentPath = parent.absolutePath
-                        loadCurrentDirectory()
+                        loadCurrentDirectory(forceRefresh = false)
                         return
                     }
                 }
